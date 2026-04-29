@@ -1,0 +1,10 @@
+services:
+  esphome:
+    image: ghcr.io/esphome/esphome:latest
+    volumes:
+      - ./config:/config
+      - ./components:/config/components
+    privileged: true
+    network_mode: host
+    environment:
+      - PLATFORMIO_CORE_DIR=/config/.pio

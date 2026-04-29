@@ -1,0 +1,196 @@
+substitutions:
+  device_name: hioc-heltec-v3
+  device_friendly_name: Home IO Control WiFi LoRa32 V3
+
+## Home IO Control test config for Heltec WiFi LoRa32 V3.2 (ESP32-S3 + SX1262)
+## V3.2 has TCXO at 1.8V, no external PA amplifier (no FEM pins needed).
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_friendly_name}
+  on_boot:
+    priority: 600
+    then:
+      - output.turn_on: oled_vext
+      - lambda: |-
+          id(oled_active_cover) = "System";
+          id(oled_status_text) = "Ready";
+      - script.execute: oled_refresh
+
+esp32:
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+i2c:
+  sda: 17
+  scl: 18
+  scan: false
+  frequency: 400kHz
+
+spi:
+  clk_pin: 9
+  mosi_pin: 10
+  miso_pin: 11
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [home_io_control]
+
+font:
+  - file: "gfonts://Roboto"
+    id: oled_font_small
+    size: 12
+  - file: "gfonts://Roboto"
+    id: oled_font_title
+    size: 16
+
+globals:
+  - id: oled_last_activity_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: oled_active_cover
+    type: std::string
+    restore_value: no
+    initial_value: '"Starting"'
+  - id: oled_status_text
+    type: std::string
+    restore_value: no
+    initial_value: '"Starting"'
+
+output:
+  - platform: gpio
+    id: oled_vext
+    pin:
+      number: 36
+      inverted: true
+
+script:
+  - id: oled_refresh
+    then:
+      - lambda: |-
+          id(oled_last_activity_ms) = millis();
+      - output.turn_on: oled_vext
+      - component.update: status_display
+
+  - id: oled_show_state
+    parameters:
+      cover_label: string
+      status_text: string
+    then:
+      - lambda: |-
+          id(oled_active_cover) = cover_label;
+          id(oled_status_text) = status_text;
+      - script.execute: oled_refresh
+
+  - id: oled_show_idle
+    parameters:
+      cover_label: string
+      position: float
+    then:
+      - lambda: |-
+          id(oled_active_cover) = cover_label;
+          if (position == position) {
+            if (position >= 0.99f) {
+              id(oled_status_text) = "Open";
+            } else if (position <= 0.01f) {
+              id(oled_status_text) = "Closed";
+            } else {
+              id(oled_status_text) = "Stopped";
+            }
+          } else {
+            id(oled_status_text) = "Stopped";
+          }
+      - script.execute: oled_refresh
+
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: 'return (millis() - id(oled_last_activity_ms)) > 5000;'
+          then:
+            - output.turn_off: oled_vext
+          else:
+            - output.turn_on: oled_vext
+
+display:
+  - platform: ssd1306_i2c
+    id: status_display
+    model: "SSD1306 128x64"
+    address: 0x3C
+    reset_pin: 21
+    update_interval: 500ms
+    lambda: |-
+      const uint32_t now = millis();
+      if ((now - id(oled_last_activity_ms)) > 5000) {
+        it.fill(COLOR_OFF);
+        return;
+      }
+
+      auto print_cover_line = [&](int y, const char *label, float position) {
+        if (position == position) {
+          it.printf(0, y, id(oled_font_small), "%s %.0f%%", label, position * 100.0f);
+        } else {
+          it.printf(0, y, id(oled_font_small), "%s --", label);
+        }
+      };
+
+      it.printf(0, 0, id(oled_font_title), "%s", "Awnings");
+      print_cover_line(18, "Patio", id(patio_awning).position);
+      it.printf(0, 46, id(oled_font_small), "%s %s", id(oled_active_cover).c_str(), id(oled_status_text).c_str());
+
+home_io_control:
+  cs_pin: 8
+  rst_pin: 12
+  dio1_pin: 14
+  busy_pin: 13
+  radio_type: sx1262
+  tcxo_voltage: 1_8V
+  node_id: !secret hub_node_id
+  system_key: !secret hub_system_key
+
+cover:
+  - platform: home_io_control
+    id: patio_awning
+    name: "Patio Awning"
+    device_class: awning
+    io_device_id: !secret example_io_device_id
+    invert_position: true
+    on_opening:
+      - script.execute:
+          id: oled_show_state
+          cover_label: "Patio"
+          status_text: "Opening"
+    on_closing:
+      - script.execute:
+          id: oled_show_state
+          cover_label: "Patio"
+          status_text: "Closing"
+    on_idle:
+      - script.execute:
+          id: oled_show_idle
+          cover_label: "Patio"
+          position: !lambda 'return id(patio_awning).position;'
+
+button:
+  - platform: home_io_control
+    name: "Discover & Pair"

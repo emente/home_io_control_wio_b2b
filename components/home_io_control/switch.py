@@ -1,0 +1,39 @@
+import esphome.codegen as cg
+import esphome.config_validation as cv
+from esphome.components import switch
+from esphome.const import CONF_ID
+
+from . import home_io_control_ns, IOHomeControlComponent, CONF_HOME_IO_CONTROL_ID, validate_device_id
+
+DEPENDENCIES = ["home_io_control"]
+
+CONF_DEVICE_ID = "io_device_id"
+
+IOHomeSwitch = home_io_control_ns.class_("IOHomeSwitch", switch.Switch, cg.Component)
+
+CONFIG_SCHEMA = (
+    # Switches are exposed as binary entities; a richer state model needs real-device evidence
+    # before it should be surfaced in the YAML schema.
+    switch.switch_schema(IOHomeSwitch)
+    .extend(
+        {
+            cv.GenerateID(CONF_HOME_IO_CONTROL_ID): cv.use_id(
+                IOHomeControlComponent
+            ),
+            cv.Required(CONF_DEVICE_ID): validate_device_id,
+        }
+    )
+    .extend(cv.COMPONENT_SCHEMA)
+)
+
+
+async def to_code(config):
+    var = cg.new_Pvariable(config[CONF_ID])
+    await cg.register_component(var, config)
+    await switch.register_switch(var, config)
+
+    parent = await cg.get_variable(config[CONF_HOME_IO_CONTROL_ID])
+    # The runtime entity stays small: Python codegen only wires it to the shared controller and
+    # provides the validated IO-homecontrol device ID.
+    cg.add(var.set_parent(parent))
+    cg.add(var.set_device_id(config[CONF_DEVICE_ID]))

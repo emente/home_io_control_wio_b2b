@@ -1,0 +1,9 @@
+config/.esphome/
+config/.pio/
+config/secrets.yaml
+*.pyc
+__pycache__/
+.pio/
+build/
+reference/
+analysis/

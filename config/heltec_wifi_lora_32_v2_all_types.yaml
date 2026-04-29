@@ -1,0 +1,74 @@
+substitutions:
+  device_name: hioc-heltec-v2
+  device_friendly_name: Home IO Control WiFi LoRa32 V2 All Types
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_friendly_name}
+
+esp32:
+  variant: esp32
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+spi:
+  clk_pin: 5
+  mosi_pin: 27
+  miso_pin: 19
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [home_io_control]
+
+home_io_control:
+  id: home_io_hub
+  cs_pin: 18
+  rst_pin: 14
+  dio0_pin: 26
+  node_id: !secret hub_node_id
+  system_key: !secret hub_system_key
+
+cover:
+  - platform: home_io_control
+    home_io_control_id: home_io_hub
+    id: demo_awning_cover
+    name: "Demo Awning"
+    device_class: awning
+    io_device_id: "A1B2C3"
+    invert_position: true
+
+light:
+  - platform: home_io_control
+    home_io_control_id: home_io_hub
+    id: demo_light
+    name: "Demo Light"
+    io_device_id: "D4E5F6"
+
+switch:
+  - platform: home_io_control
+    home_io_control_id: home_io_hub
+    id: demo_switch
+    name: "Demo Switch"
+    io_device_id: "112233"
+
+button:
+  - platform: home_io_control
+    home_io_control_id: home_io_hub
+    name: "Discover & Pair"
