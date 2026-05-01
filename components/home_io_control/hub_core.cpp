@@ -5,6 +5,8 @@
 #include "radio_sx1262.h"
 #include "esphome/core/log.h"
 #include <new>
+#include <string>
+#include <cstdio>
 
 namespace esphome {
 namespace home_io_control {
@@ -41,6 +43,15 @@ static void log_rejected_operation_(const std::string &device_id, const IoDevice
   ESP_LOGW(TAG, "Rejecting %s for device %s: type=%s (%u) class=%s profile=%s expected=%s", operation,
            device_id.c_str(), device_type_name(dev.type), static_cast<uint8_t>(dev.type),
            device_capability_class_name(dev.type), device_operation_profile_name(dev.type), expected);
+}
+
+static std::string format_position(float pos) {
+  if (pos == UNKNOWN_POSITION) {
+    return "unknown";
+  }
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%.0f%%", pos);
+  return buf;
 }
 
 static bool persisted_node_id_is_valid_(const uint8_t id[NODE_ID_SIZE]) {
@@ -274,7 +285,7 @@ void IOHomeControlComponent::update_device_status_(const IoFrame &frame) {
     } else {
       dev.next_update = millis() + 60000;
     }
-    ESP_LOGI(TAG, "Device %s: position=%.0f%% target=%.0f%% %s", id.c_str(), dev.position, dev.target,
+    ESP_LOGI(TAG, "Device %s: position=%s target=%s %s", id.c_str(), format_position(dev.position).c_str(), format_position(dev.target).c_str(),
              dev.is_stopped ? "stopped" : "moving");
     this->notify_device_update_(id);
   } else if (frame.cmd == CMD_STATUS_UPDATE && frame.data_len >= 11) {
@@ -284,7 +295,7 @@ void IOHomeControlComponent::update_device_status_(const IoFrame &frame) {
     uint16_t cur = (frame.data[7] << 8) | frame.data[8];
     decode_position_report(tgt, cur, dev.is_stopped, dev.target, dev.position);
     dev.next_update = dev.is_stopped ? millis() + 3600000 : millis() + 60000;
-    ESP_LOGI(TAG, "Device %s: position=%.0f%% target=%.0f%% %s (status update)", id.c_str(), dev.position, dev.target,
+    ESP_LOGI(TAG, "Device %s: position=%s target=%s %s (status update)", id.c_str(), format_position(dev.position).c_str(), format_position(dev.target).c_str(),
              dev.is_stopped ? "stopped" : "moving");
     this->notify_device_update_(id);
   } else if (frame.cmd == CMD_GET_INFO2_RESP && frame.data_len >= 12) {

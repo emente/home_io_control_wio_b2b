@@ -235,6 +235,7 @@ const char *device_operation_profile_name(DeviceType type);
 // ============================================================================
 
 /// Sentinel value meaning "position is not known yet".
+/// Matches POS_UNKNOWN (0xD4 = 212 decimal) for easy debugging.
 static constexpr float UNKNOWN_POSITION = 212.0f;
 
 /// Runtime state of a paired IO-Homecontrol device.
