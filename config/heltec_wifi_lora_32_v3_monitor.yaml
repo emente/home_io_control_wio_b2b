@@ -42,7 +42,6 @@ external_components:
   - source:
       type: local
       path: components
-    components: [home_io_control]
 
 home_io_control:
   cs_pin: 8

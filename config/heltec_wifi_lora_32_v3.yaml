@@ -52,7 +52,6 @@ external_components:
   - source:
       type: local
       path: components
-    components: [home_io_control]
 
 font:
   - file: "gfonts://Roboto"

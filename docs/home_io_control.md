@@ -19,10 +19,7 @@ Key concepts:
 
 ```yaml
 external_components:
-  - source:
-      type: git
-      url: https://github.com/laberning/home_io_control
-    components: [home_io_control]
+  - source: github://laberning/home_io_control
 
 spi:
   clk_pin: 5
@@ -40,7 +37,7 @@ cover:
   - platform: home_io_control
     name: "Patio Awning"
     device_class: awning
-    io_device_id: "123ABC"
+    io_device_id: "FEEB1E"
 
 button:
   - platform: home_io_control
@@ -65,10 +62,10 @@ Configuration variables:
 - `id` (Optional): Manually specify the hub ID for code generation. Use this when entity blocks should reference a specific hub with `home_io_control_id`.
 - `cs_pin` (Required): SPI chip select pin for the radio.
 - `rst_pin` (Required): Radio reset pin.
-- `dio0_pin` (Optional): SX1276 DIO0 interrupt pin. Required in practice for SX1276 builds.
+- `dio0_pin` (Optional): SX1276 DIO0 interrupt pin.
 - `dio4_pin` (Optional): SX1276 DIO4 preamble-detect pin. Most boards do not wire this.
-- `dio1_pin` (Optional): SX1262 DIO1 interrupt pin. Required in practice for SX1262 builds.
-- `busy_pin` (Optional): SX1262 BUSY pin. Required in practice for SX1262 builds.
+- `dio1_pin` (Optional): SX1262 DIO1 interrupt pin.
+- `busy_pin` (Optional): SX1262 BUSY pin.
 - `node_id` (Required): 3-byte controller ID as exactly 6 hexadecimal characters.
 - `system_key` (Required): 16-byte installation key as exactly 32 hexadecimal characters.
 - `tx_power` (Optional, default: `17`): Radio transmit power. The schema currently accepts `0` to `22`.
@@ -103,7 +100,7 @@ cover:
     id: patio_awning
     name: "Patio Awning"
     device_class: awning
-    io_device_id: "123ABC"
+    io_device_id: "FEEB1E"
     invert_position: true
 ```
 
@@ -126,9 +123,9 @@ Use the light platform for binary on/off IO-homecontrol light devices.
 ```yaml
 light:
   - platform: home_io_control
-    id: garage_light
-    name: "Garage Light"
-    io_device_id: "D4E5F6"
+    id: garden_light
+    name: "Garden Light"
+    io_device_id: "D15C05"
 ```
 
 Configuration variables:
@@ -150,8 +147,8 @@ Use the switch platform for binary on/off IO-homecontrol switch devices.
 ```yaml
 switch:
   - platform: home_io_control
-    id: garage_aux_switch
-    name: "Garage Auxiliary Switch"
+    id: irrigation_switch
+    name: "Irrigation Switch"
     io_device_id: "112233"
 ```
 
@@ -196,8 +193,6 @@ esphome:
 
 esp32:
   variant: esp32
-  framework:
-    type: arduino
 
 wifi:
   ssid: !secret wifi_ssid
@@ -216,10 +211,7 @@ spi:
   miso_pin: 19
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/laberning/home_io_control
-    components: [home_io_control]
+  - source: github://laberning/home_io_control
 
 home_io_control:
   cs_pin: 18
@@ -232,7 +224,7 @@ cover:
   - platform: home_io_control
     name: "Awning"
     device_class: awning
-    io_device_id: "123ABC"
+    io_device_id: "FEEB1E"
     invert_position: true
 
 button:
@@ -266,10 +258,7 @@ spi:
   miso_pin: 11
 
 external_components:
-  - source:
-      type: git
-      url: https://github.com/laberning/home_io_control
-    components: [home_io_control]
+  - source: github://laberning/home_io_control
 
 home_io_control:
   cs_pin: 8
@@ -285,7 +274,7 @@ cover:
   - platform: home_io_control
     name: "Awning"
     device_class: awning
-    io_device_id: "123ABC"
+    io_device_id: "FEEB1E"
     invert_position: true
 
 button:
@@ -293,7 +282,7 @@ button:
     name: "Discover & Pair"
 ```
 
-### Mixed Cover, Light, and Switch Example
+### Minimal Example with all Device Types: Cover, Light, and Switch
 
 ```yaml
 home_io_control:
@@ -312,15 +301,15 @@ cover:
 
 light:
   - platform: home_io_control
-    id: garage_light
-    name: "Garage Light"
-    io_device_id: "D4E5F6"
+    id: garden_light
+    name: "Garden Light"
+    io_device_id: "D15C05"
 
 switch:
   - platform: home_io_control
-    id: garage_aux_switch
-    name: "Garage Auxiliary Switch"
-    io_device_id: "112233"
+    id: irrigation_switch
+    name: "Irrigation Switch"
+    io_device_id: "D0661E"
 
 button:
   - platform: home_io_control

@@ -2,14 +2,15 @@
 
 An [ESPHome](https://esphome.io/) external component that implements the **IO-Homecontrol 2W** (two-way, with device feedback) protocol. Control shutters, blinds, awnings, openers, curtains, and other IO-Homecontrol devices directly from ESPHome and Home Assistant using an ESP32 board with an SX1276 or SX1262 radio module.
 
-> **Experimental Project — Use With Caution**  
-> This project is still very new, and I’m actively building it out. Some parts may not work in all scenarios yet.  
+> [!IMPORTANT]
+> **Experimental Project — Use With Caution**
+> This project is in early development. You may encounter edge cases where certain features do not yet function as expected.
 >  
 > I can’t verify pairing at the moment due to some pairing issues with my IO-Homecontrol devices.
 > However, if you reuse the same `node_id` and `system_key` from a previously paired hub, you can bypass pairing entirely - and that path is known to function correctly.
 >  
-> **Feedback welcome:**  
-> Feedback, bug reports, and testing help are appreciated.
+> **Get Involved**  
+> Support is greatly appreciated - whether you're helping with testing devices that I don't own, give feedback or submit pull requests.
 
 ## Features
 
@@ -31,7 +32,7 @@ The table below lists board mappings that are known to be plausible for this com
 
 | Board | Radio | Status | `spi:` pins | `home_io_control:` pins | Notes |
 |-------|-------|--------|-------------|-------------------------|-------|
-| **Heltec LoRa32 v2** | SX1276 | ✅ Confirmed to work | `clk_pin: 5`, `mosi_pin: 27`, `miso_pin: 19` | `cs_pin: 18`, `rst_pin: 14`, `dio0_pin: 26` | Matches [config/heltec_wifi_lora_32_v2.yaml](config/heltec_wifi_lora_32_v2.yaml), the SX1276 cover example with OLED status display |
+| **Heltec WiFi LoRa32 v2** | SX1276 | ✅ Confirmed to work | `clk_pin: 5`, `mosi_pin: 27`, `miso_pin: 19` | `cs_pin: 18`, `rst_pin: 14`, `dio0_pin: 26` | Matches [config/heltec_wifi_lora_32_v2.yaml](config/heltec_wifi_lora_32_v2.yaml), the SX1276 cover example with OLED status display |
 | **Heltec WiFi LoRa32 V3 / V3.2** | SX1262 | ✅ Confirmed to work | `clk_pin: 9`, `mosi_pin: 10`, `miso_pin: 11` | `cs_pin: 8`, `rst_pin: 12`, `dio1_pin: 14`, `busy_pin: 13` | Use `radio_type: sx1262` and `tcxo_voltage: 1_8V`; matches [config/heltec_wifi_lora_32_v3.yaml](config/heltec_wifi_lora_32_v3.yaml), the SX1262 cover example with OLED status display |
 | LilyGO T3-S3 SX1262 | SX1262 | Untested | `clk_pin: 5`, `mosi_pin: 6`, `miso_pin: 3` | `cs_pin: 7`, `rst_pin: 8`, `dio1_pin: 33`, `busy_pin: 34` | should have the same mapping on v1.2 and v1.3; start with `radio_type: sx1262` |
 | LilyGO T3-S3 SX1276 | SX1276 | Untested | `clk_pin: 5`, `mosi_pin: 6`, `miso_pin: 3` | `cs_pin: 7`, `rst_pin: 8`, `dio0_pin: 9` | |
@@ -51,10 +52,7 @@ Add to your ESPHome YAML configuration:
 
 ```yaml
 external_components:
-  - source:
-      type: git
-      url: https://github.com/laberning/home_io_control
-    components: [home_io_control]
+  - source: github://laberning/home_io_control
 ```
 
 Or for local development:
@@ -64,12 +62,13 @@ external_components:
   - source:
       type: local
       path: components
-    components: [home_io_control]
 ```
 
 ## Configuration
 
 The full configuration reference lives in [docs/home_io_control.md](docs/home_io_control.md). That page contains all component parameters, platform-specific options and the pairing workflow.
+
+Both `esp-idf` and `arduino` framework are supported, but testing and development mostly happens on `esp-idf`.
 
 ### Simple Example
 
@@ -79,9 +78,7 @@ esphome:
   friendly_name: Home IO Control
 
 esp32:
-  board: heltec_wifi_lora_32_V2
-  framework:
-    type: arduino
+  variant: esp32
 
 logger:
   level: DEBUG
@@ -98,36 +95,40 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
+external_components:
+  - source: github://laberning/home_io_control
+
+# Set the pinout for your device - this example uses Heltec WiFi LoRa32 v2.
 spi:
   clk_pin: 5
   mosi_pin: 27
   miso_pin: 19
 
-external_components:
-  - source:
-      type: git
-      url: https://github.com/laberning/home_io_control
-    components: [home_io_control]
-
 home_io_control:
   cs_pin: 18
   rst_pin: 14
   dio0_pin: 26
+  # If this device was previously paired with another hub, enter that hub's 
+  # Node ID and System Key below to allow the devices to reconnect automatically. 
+  # Otherwise, generate new values according to the requirements below:
+  # Node ID: Must be exactly 6 hexadecimal characters.
   node_id: "C0FFEE"
+  # System Key: Must be exactly 32 hexadecimal characters.
   system_key: "00112233445566778899AABBCCDDEEFF"
 
 cover:
   - platform: home_io_control
     device_class: awning
     name: "Awning"
-    io_device_id: "123ABC"
+    # If the device ID is unknown, use the "Discover & Pair" button to discover it.
+    io_device_id: "FEEB1E"
 
 button:
   - platform: home_io_control
     name: "Discover & Pair"
 ```
 
-For all other examples, platform-specific options, and pairing instructions, use [docs/home_io_control.md](docs/home_io_control.md). That includes the repo-backed Heltec V2 all-types example config with dummy cover, light, switch, and pairing entries.
+For all other examples, platform-specific options, and pairing instructions, use [docs/home_io_control.md](docs/home_io_control.md).
 
 ## Troubleshooting
 
@@ -209,9 +210,10 @@ This project is only possible thanks to the effort and shared knowledge from the
 - **[cridp/iown-homecontrol-esp32sx1276](https://github.com/cridp/iown-homecontrol-esp32sx1276)** — A detailed SX1276 IO-Homecontrol implementation that was used for validating this project's protocol work.
 - **[ESPHome](https://esphome.io/)** — The ESPHome framework.
 
-## Disclaimer
+## Disclaimer & Regulatory Warning
 
-> **⚠️ This tool is designed for educational and testing purposes, provided "as is", without warranty of any kind. It is forbidden in most countries to interact with IO-Homecontrol devices that are not yours.**
+> [!WARNING]
+> **This tool is designed for educational and testing purposes, provided "as is", without warranty of any kind. It is forbidden in most countries to interact with IO-Homecontrol devices that are not yours.**
 
 ## License
 

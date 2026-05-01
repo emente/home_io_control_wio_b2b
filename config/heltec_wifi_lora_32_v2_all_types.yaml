@@ -35,7 +35,6 @@ external_components:
   - source:
       type: local
       path: components
-    components: [home_io_control]
 
 home_io_control:
   id: home_io_hub
@@ -59,14 +58,14 @@ light:
     home_io_control_id: home_io_hub
     id: demo_light
     name: "Demo Light"
-    io_device_id: "D4E5F6"
+    io_device_id: "D15C05"
 
 switch:
   - platform: home_io_control
     home_io_control_id: home_io_hub
     id: demo_switch
     name: "Demo Switch"
-    io_device_id: "112233"
+    io_device_id: "D0661E"
 
 button:
   - platform: home_io_control
