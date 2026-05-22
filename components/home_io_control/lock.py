@@ -1,12 +1,12 @@
 ## @file
-## @brief ESPHome binary switch platform schema and code generation.
+## @brief ESPHome lock platform schema and code generation.
 ## @ingroup hioc_codegen
 ##
-## Defines the experimental on/off switch integration and wires it to the shared hub.
+## Defines the experimental IO-Homecontrol lock integration and wires it to the shared hub.
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import switch, text_sensor
+from esphome.components import lock, text_sensor
 from esphome.const import (
     CONF_DISABLED_BY_DEFAULT,
     CONF_ID,
@@ -19,10 +19,10 @@ from . import (
     home_io_control_ns,
     IOHomeControlComponent,
     CONF_HOME_IO_CONTROL_ID,
-    validate_device_id,
-    validate_status_poll_interval,
-    validate_device_type,
     device_type_expression,
+    validate_device_id,
+    validate_device_type,
+    validate_status_poll_interval,
 )
 
 DEPENDENCIES = ["home_io_control"]
@@ -33,7 +33,7 @@ CONF_DEVICE_TYPE = "io_device_type"
 CONF_SUBTYPE = "io_subtype"
 CONF_STATUS_POLL_INTERVAL = "status_poll_interval"
 
-IOHomeSwitch = home_io_control_ns.class_("IOHomeSwitch", switch.Switch, cg.Component)
+IOHomeLock = home_io_control_ns.class_("IOHomeLock", lock.Lock, cg.Component)
 IOHomeDeviceNameTextSensor = home_io_control_ns.class_(
     "IOHomeDeviceNameTextSensor", text_sensor.TextSensor, cg.Component
 )
@@ -55,10 +55,9 @@ def device_name_sensor_name(config):
         return f"{base_name} Device Name"
     return "Device Name"
 
+
 CONFIG_SCHEMA = (
-    # Switches are exposed as binary entities; a richer state model needs real-device evidence
-    # before it should be surfaced in the YAML schema.
-    switch.switch_schema(IOHomeSwitch)
+    lock.lock_schema(IOHomeLock)
     .extend(
         {
             cv.GenerateID(CONF_HOME_IO_CONTROL_ID): cv.use_id(
@@ -78,11 +77,9 @@ CONFIG_SCHEMA = (
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
-    await switch.register_switch(var, config)
+    await lock.register_lock(var, config)
 
     parent = await cg.get_variable(config[CONF_HOME_IO_CONTROL_ID])
-    # The runtime entity stays small: Python codegen only wires it to the shared controller and
-    # provides the validated IO-homecontrol device ID.
     cg.add(var.set_parent(parent))
     cg.add(var.set_device_id(config[CONF_DEVICE_ID]))
 
