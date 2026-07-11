@@ -43,7 +43,10 @@ const char *outcome_name(PairingOutcome outcome) {
   }
 }
 
-const char *event_kind_name(PairingTelemetryEventKind kind) {
+// Only referenced from ESP_LOGI() calls in log_summary(); ESP_LOGI is a no-op in host unit
+// test builds, so those call sites (and this function) vanish entirely under -Wunused-function
+// there even though it's genuinely used in firmware builds.
+[[maybe_unused]] const char *event_kind_name(PairingTelemetryEventKind kind) {
   switch (kind) {
     case PairingTelemetryEventKind::TX:
       return "tx";

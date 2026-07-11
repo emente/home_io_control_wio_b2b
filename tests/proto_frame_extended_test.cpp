@@ -699,6 +699,41 @@ TEST(ProtoFrame, Decode1wMainIntentEdgeCases) {
   EXPECT_EQ(tiny[0], '\0');
 }
 
+TEST(ProtoFrame, OnewayIntentToTargetSpecialCodesResolveToNoTarget) {
+  // Mirrors Decode1wMainIntentSpecialCommands: every special code (including STOP) must
+  // resolve to no target, matching decode_1w_main_intent()'s branch order exactly.
+  EXPECT_FALSE(oneway_intent_to_target(POS_STOP, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_FAVORITE, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_FAVORITE, POS_VENT_MODIFIER).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_UNKNOWN, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_FORCE_OPEN, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_SECURED_TARGET, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(POS_DEFAULT, 0x00).has_value());
+}
+
+TEST(ProtoFrame, OnewayIntentToTargetNumericPositions) {
+  // 0x00 = fully open -> IO target 0
+  auto target = oneway_intent_to_target(0x00, 0x00);
+  ASSERT_TRUE(target.has_value());
+  EXPECT_FLOAT_EQ(*target, 0.0f);
+
+  // 0xC8 = 200 = fully closed -> IO target 100 (also the <=200 boundary)
+  target = oneway_intent_to_target(0xC8, 0x00);
+  ASSERT_TRUE(target.has_value());
+  EXPECT_FLOAT_EQ(*target, 100.0f);
+
+  // 0x32 = 50 -> 25%
+  target = oneway_intent_to_target(0x32, 0x00);
+  ASSERT_TRUE(target.has_value());
+  EXPECT_FLOAT_EQ(*target, 25.0f);
+}
+
+TEST(ProtoFrame, OnewayIntentToTargetOutOfRangeResolvesToNoTarget) {
+  // Values above 200 that aren't recognized special codes have no known target.
+  EXPECT_FALSE(oneway_intent_to_target(0xE0, 0x00).has_value());
+  EXPECT_FALSE(oneway_intent_to_target(0xFF, 0x00).has_value());
+}
+
 TEST(ProtoFrame, Decode1wFrameExecuteCommand) {
   IoFrame frame{};
   frame.ctrl0 = CTRL0_PROTOCOL_1W | CTRL0_START | CTRL0_END | 0x0F;  // 1W, 16 bytes total

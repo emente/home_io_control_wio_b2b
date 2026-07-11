@@ -57,7 +57,12 @@ cover::CoverOperation IOHomeCover::infer_operation_from_position_delta_(bool inv
 }
 
 void IOHomeCover::control(const cover::CoverCall &call) {
+  // Optimistic state gives immediate HA UI feedback for the queue-dispatch + TX/response gap;
+  // the queued command's own response (update_device_status_()) remains the source of truth
+  // and will overwrite this. No-op when this device has optimistic_state=false (see
+  // DeviceRegistry::apply_optimistic_target()/clear_optimistic_target()).
   if (call.get_stop()) {
+    this->parent_->clear_optimistic_target(this->device_id_);
     this->parent_->queue_device_command(this->device_id_, CoverCommand::STOP);
     return;
   }
@@ -75,6 +80,7 @@ void IOHomeCover::control(const cover::CoverCall &call) {
     const bool invert = this->effective_invert_();
     uint8_t const io_pos = invert ? (uint8_t) (ha_pos * 100.0F) : (uint8_t) ((1.0F - ha_pos) * 100.0F);
     auto const tilt = static_cast<uint8_t>(*tilt_opt * 100.0F);
+    this->parent_->apply_optimistic_target(this->device_id_, io_pos);
     this->parent_->queue_set_device_position_and_tilt(this->device_id_, io_pos, tilt);
     return;
   }
@@ -100,6 +106,7 @@ void IOHomeCover::control(const cover::CoverCall &call) {
       io_pos = (uint8_t) ((1.0F - ha_pos) * 100.0F);
     }
 
+    this->parent_->apply_optimistic_target(this->device_id_, io_pos);
     this->parent_->queue_set_device_position(this->device_id_, io_pos);
   }
 }

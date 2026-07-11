@@ -42,6 +42,11 @@ class DeviceBoundEntity {
   /// @brief Set the declared device subtype (from YAML).
   /// @param subtype Subtype value.
   void set_subtype(uint8_t subtype) { this->subtype_ = subtype; }
+  /// @brief Enable or disable optimistic target updates for this device (from YAML).
+  /// Only covers expose this in YAML today; other platforms keep the default (true), which is
+  /// inert for entity types that never read `IoDevice.target`/`is_stopped`.
+  /// @param optimistic_state False to disable optimistic state; default true.
+  void set_optimistic_state(bool optimistic_state) { this->optimistic_state_ = optimistic_state; }
   /// @brief Configure bounded follow-up polling while a state change is expected.
   /// @param poll_interval_ms Poll interval in milliseconds; zero keeps the default single settle poll only.
   void set_status_poll_interval(uint32_t poll_interval_ms) { this->status_poll_interval_ms_ = poll_interval_ms; }
@@ -57,7 +62,7 @@ class DeviceBoundEntity {
   /// @param on_update The entity's device-update callback.
   void register_device_binding_(Component *self, bool inverted,
                                 std::function<void(const std::string &, const IoDevice &)> on_update) {
-    this->parent_->add_device(this->device_id_, this->device_type_, this->subtype_, inverted);
+    this->parent_->add_device(this->device_id_, this->device_type_, this->subtype_, inverted, this->optimistic_state_);
     this->parent_->set_device_status_poll_interval(this->device_id_, this->status_poll_interval_ms_);
     this->parent_->register_device_callback(std::move(on_update));
     // Schedule the delayed initial poll through the public scheduler: Component::set_timeout is
@@ -90,6 +95,7 @@ class DeviceBoundEntity {
   DeviceType device_type_{DeviceType::UNKNOWN};
   uint8_t subtype_{0};
   uint32_t status_poll_interval_ms_{0};
+  bool optimistic_state_{true};
 };
 
 }  // namespace home_io_control

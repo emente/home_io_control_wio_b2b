@@ -37,11 +37,13 @@ class DeviceRegistry {
 
   /// Register a device with full YAML-derived metadata.
   /// No-op when @p device_id is already registered.  Warns and returns when the hex string is invalid.
-  /// @param device_id Hexadecimal node ID string.
-  /// @param type      Device type from YAML declaration.
-  /// @param subtype   Device subtype byte.
-  /// @param inverted  Position-inversion flag.
-  void add(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted);
+  /// @param device_id       Hexadecimal node ID string.
+  /// @param type            Device type from YAML declaration.
+  /// @param subtype         Device subtype byte.
+  /// @param inverted        Position-inversion flag.
+  /// @param optimistic_state Whether `apply_optimistic_target`/`clear_optimistic_target` may set
+  ///                         `target` ahead of a confirming poll/response; default true.
+  void add(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted, bool optimistic_state = true);
 
   /// Insert or overwrite a device entry without deduplication or hex-validation checks.
   /// Used by the pairing flow which already validated the device during discovery.
@@ -72,6 +74,36 @@ class DeviceRegistry {
   /// @return Pointer to the device-ID list, or nullptr when the remote is unknown.
   [[nodiscard]] const std::vector<std::string> *linked_devices(const std::string &remote_id) const;
 
+  /// Record that a remote's typed-broadcast presses (e.g. "all awnings") should also apply to
+  /// @p device_id, matching how 1W remotes address a device class rather than a single node.
+  /// Independent of add_linked_remote()'s id-keyed map — a device may be linked both ways;
+  /// callers dedup (see IOHomeControlComponent's 1W dispatch) so it is only touched once per press.
+  /// @param type      Device class the broadcast targets.
+  /// @param device_id Node ID of the device to add to that class.
+  void add_linked_remote_class(DeviceType type, const std::string &device_id);
+
+  /// Retrieve the list of device IDs linked to a device class.
+  /// @return Pointer to the device-ID list, or nullptr when no device is linked to that class.
+  [[nodiscard]] const std::vector<std::string> *linked_devices_for_class(DeviceType type) const;
+
+  /// Set an optimistic target position ahead of a confirming poll/response, and notify.
+  ///
+  /// No-op (and returns false) when the device is unknown or has `optimistic_state == false`.
+  /// Never touches `position` — only the caller's later poll/response settles that. Used by
+  /// both the 1W linked-remote path and HA-issued 2W cover commands so the entity shows
+  /// movement direction immediately instead of only after the confirming update arrives.
+  /// @param device_id         Device to update.
+  /// @param target_io_position Target position in IO units (0=open, 100=closed).
+  /// @return true if the optimistic state was applied.
+  bool apply_optimistic_target(const std::string &device_id, float target_io_position);
+
+  /// Clear a device's optimistic target (e.g. on STOP), and notify.
+  ///
+  /// No-op (and returns false) when the device is unknown or has `optimistic_state == false`.
+  /// @param device_id Device to update.
+  /// @return true if the optimistic target was cleared.
+  bool clear_optimistic_target(const std::string &device_id);
+
   /// @return Number of registered devices.
   [[nodiscard]] size_t size() const { return devices_.size(); }
 
@@ -92,6 +124,7 @@ class DeviceRegistry {
   std::map<std::string, IoDevice> devices_;
   std::vector<DeviceUpdateCallback> callbacks_;
   std::map<std::string, std::vector<std::string>> linked_remotes_;
+  std::map<DeviceType, std::vector<std::string>> linked_remote_classes_;
 };
 
 }  // namespace home_io_control

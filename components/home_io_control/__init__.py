@@ -86,6 +86,21 @@ DEVICE_TYPE_OPTIONS = {
 }
 
 
+def _resolve_device_type_token(token):
+    """Resolve a lowercase, stripped device-type token (name or raw int/hex string) to 0-255.
+
+    Single source of truth for the "named value from DEVICE_TYPE_OPTIONS, else raw integer"
+    acceptance rule shared by validate_device_type() (io_device_type) and
+    validate_linked_remote_entry() (the class:<device_type> linked-remotes form) — both accept
+    the exact same set of device-type spellings, so the lookup lives here once.
+    @raises ValueError if token is neither a known name nor a parseable integer.
+    @raises cv.Invalid if token parses as an integer but is out of range 0-255.
+    """
+    if token in DEVICE_TYPE_OPTIONS:
+        return DEVICE_TYPE_OPTIONS[token]
+    return cv.int_range(min=0, max=0xFF)(int(token, 0))
+
+
 def validate_device_type(value):
     """Validate io_device_type as a named string or integer 0-255."""
     if isinstance(value, int):
@@ -93,10 +108,8 @@ def validate_device_type(value):
 
     if isinstance(value, str):
         normalized = cv.string_strict(value).strip().lower()
-        if normalized in DEVICE_TYPE_OPTIONS:
-            return DEVICE_TYPE_OPTIONS[normalized]
         try:
-            return cv.int_range(min=0, max=0xFF)(int(normalized, 0))
+            return _resolve_device_type_token(normalized)
         except ValueError as err:
             raise cv.Invalid(
                 "Device type must be a known name or an integer in the range 0..255 (for example 0x11)"
@@ -148,6 +161,31 @@ def validate_device_id(value):
     except ValueError:
         raise cv.Invalid("Device ID must be valid hexadecimal")
     return value
+
+
+def validate_linked_remote_entry(value):
+    """Validate a linked_remotes entry: either a device ID or 'class:<device_type>'.
+
+    The class form matches how 1W remotes address a typed broadcast (e.g. "all awnings")
+    rather than a single node, so one entry can cover many same-type devices without
+    enumerating each one. Shares _resolve_device_type_token() with validate_device_type()
+    so a type without a named YAML alias yet (e.g. discovered via pairing) can still be
+    class-linked. Normalized to 'class:0x<HH>' (uppercase hex) so wire_device_binding() can
+    parse the type directly without a second DEVICE_TYPE_OPTIONS lookup; bare device IDs are
+    validated exactly as before and behave identically.
+    """
+    if isinstance(value, str) and value.lower().startswith("class:"):
+        type_token = value.split(":", 1)[1].strip().lower()
+        try:
+            type_value = _resolve_device_type_token(type_token)
+        except ValueError as err:
+            raise cv.Invalid(
+                f"Unknown device class '{type_token}' in linked_remotes; expected one of: "
+                + ", ".join(sorted(DEVICE_TYPE_OPTIONS))
+                + ", or a raw integer such as 0x14"
+            ) from err
+        return f"class:0x{type_value:02X}"
+    return validate_device_id(value)
 
 
 def validate_status_poll_interval(value):

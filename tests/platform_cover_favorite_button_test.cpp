@@ -19,7 +19,10 @@ class TestableIOHomeCoverFavoriteButton : public IOHomeCoverFavoriteButton {
   void trigger_press() { this->press_action(); }
 };
 
-class FavoriteButtonMockHub : public IOHomeControlComponent {
+/// Only overrides the methods this test suite actually exercises; device registry, callback
+/// fan-out, and every other command path are inherited from MockPlatformHubBase so they don't
+/// need to be re-stubbed here (see test_helpers.h).
+class FavoriteButtonMockHub : public test::MockPlatformHubBase {
  public:
   FavoriteButtonMockHub() = default;
   ~FavoriteButtonMockHub() override = default;
@@ -28,26 +31,6 @@ class FavoriteButtonMockHub : public IOHomeControlComponent {
     last_set_device_id_ = device_id;
     last_set_position_ = position;
     return true;
-  }
-  bool set_device_tilt(const std::string &device_id, uint8_t tilt_percent) override {
-    (void) device_id;
-    (void) tilt_percent;
-    return false;
-  }
-  bool request_device_status(const std::string &device_id) override {
-    (void) device_id;
-    return false;
-  }
-  bool discover_and_pair() override { return false; }
-  bool set_light_state(const std::string &device_id, bool on) override {
-    (void) device_id;
-    (void) on;
-    return false;
-  }
-  bool set_switch_state(const std::string &device_id, bool on) override {
-    (void) device_id;
-    (void) on;
-    return false;
   }
 
   void queue_set_device_position(const std::string &device_id, uint8_t position) override {
@@ -63,39 +46,6 @@ class FavoriteButtonMockHub : public IOHomeControlComponent {
     op.command = cmd;
     queued_operations_.push_back(op);
   }
-  void queue_set_device_tilt(const std::string &device_id, uint8_t tilt_percent) override {
-    (void) device_id;
-    (void) tilt_percent;
-  }
-  void queue_request_device_status(const std::string &device_id) override { (void) device_id; }
-  void queue_discover_and_pair() override {}
-  void queue_set_light_state(const std::string &device_id, bool on) override {
-    (void) device_id;
-    (void) on;
-  }
-  void queue_set_switch_state(const std::string &device_id, bool on) override {
-    (void) device_id;
-    (void) on;
-  }
-
-  IoDevice *get_device(const std::string &device_id) override {
-    auto it = devices_.find(device_id);
-    return it != devices_.end() ? &it->second : nullptr;
-  }
-  void add_device(const std::string &device_id) override {
-    if (devices_.count(device_id))
-      return;
-    devices_[device_id] = IoDevice{};
-  }
-  void add_device(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted) override {
-    if (devices_.count(device_id))
-      return;
-    devices_[device_id] = IoDevice{};
-    devices_[device_id].type = type;
-    devices_[device_id].subtype = subtype;
-    devices_[device_id].inverted = inverted;
-  }
-  void register_device_callback(DeviceUpdateCallback cb) override { callbacks_.push_back(std::move(cb)); }
 
   const std::string &last_set_device_id() const { return last_set_device_id_; }
   uint8_t last_set_position() const { return last_set_position_; }
@@ -105,8 +55,6 @@ class FavoriteButtonMockHub : public IOHomeControlComponent {
   std::string last_set_device_id_;
   uint8_t last_set_position_{0};
   std::deque<PendingOperation> queued_operations_;
-  std::map<std::string, IoDevice> devices_;
-  std::vector<DeviceUpdateCallback> callbacks_;
 };
 
 TEST(PlatformCoverFavoriteButton, PressQueuesFavoritePosition) {

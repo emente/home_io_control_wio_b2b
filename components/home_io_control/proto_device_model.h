@@ -192,6 +192,7 @@ struct IoDevice {
   float target{UNKNOWN_POSITION};        ///< Target position the device is moving toward.
   bool is_stopped{true};                 ///< True if device is not moving.
   bool inverted{false};                  ///< True if open/close positions are swapped (e.g., horizontal awning).
+  bool optimistic_state{true};           ///< True if `target` may be set ahead of a confirming poll/response.
   uint32_t last_status{0};               ///< millis() timestamp of last received status.
 };
 

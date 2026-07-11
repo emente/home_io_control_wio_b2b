@@ -202,14 +202,58 @@ void IOHomeControlComponent::schedule_status_poll_(const std::string &device_id,
                     [this, device_id]() { this->queue_request_device_status(device_id); });
 }
 
-void IOHomeControlComponent::schedule_linked_remote_polls_(const std::string &remote_id) {
+void IOHomeControlComponent::schedule_device_polls_(const std::vector<std::string> &device_ids, uint32_t delay_ms) {
+  for (const auto &device_id : device_ids) {
+    this->begin_status_poll_tracking_(device_id, 0);
+    this->schedule_status_poll_(device_id, delay_ms);
+  }
+}
+
+void IOHomeControlComponent::schedule_linked_remote_polls_(const std::string &remote_id, uint32_t delay_ms) {
   const std::vector<std::string> *linked = this->registry_.linked_devices(remote_id);
   if (linked == nullptr)
     return;
-  for (const auto &device_id : *linked) {
-    this->begin_status_poll_tracking_(device_id, 0);
-    this->schedule_status_poll_(device_id, REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS);
+  this->schedule_device_polls_(*linked, delay_ms);
+}
+
+std::vector<std::string> IOHomeControlComponent::resolve_1w_target_devices_(const OneWayFrameInfo &info,
+                                                                            const std::string &src_id) const {
+  std::vector<std::string> devices;
+  if (const std::vector<std::string> *id_linked = this->registry_.linked_devices(src_id)) {
+    devices = *id_linked;
   }
+  if (info.address_class == AddressClass::BROADCAST_TYPE && info.target_type != DeviceType::UNKNOWN) {
+    if (const std::vector<std::string> *class_linked = this->registry_.linked_devices_for_class(info.target_type)) {
+      for (const auto &device_id : *class_linked) {
+        if (std::find(devices.begin(), devices.end(), device_id) == devices.end())
+          devices.push_back(device_id);
+      }
+    }
+  }
+  return devices;
+}
+
+bool IOHomeControlComponent::apply_optimistic_linked_state_(const OneWayFrameInfo &info,
+                                                            const std::vector<std::string> &device_ids) {
+  if (!info.has_intent)
+    return false;
+
+  const bool is_stop = info.main0 == POS_STOP;
+  const std::optional<float> target = is_stop ? std::nullopt : oneway_intent_to_target(info.main0, info.main1);
+
+  for (const auto &device_id : device_ids) {
+    const IoDevice *dev = this->registry_.get(device_id);
+    if (dev != nullptr && info.target_type != DeviceType::UNKNOWN && dev->type != DeviceType::UNKNOWN &&
+        dev->type != info.target_type) {
+      continue;  // Type mismatch: still polled by schedule_device_polls_(), just not moved optimistically.
+    }
+    if (is_stop) {
+      this->registry_.clear_optimistic_target(device_id);
+    } else if (target.has_value()) {
+      this->registry_.apply_optimistic_target(device_id, *target);
+    }
+  }
+  return is_stop;
 }
 
 void IOHomeControlComponent::maybe_fire_remote_button_event_(const OneWayFrameInfo &info, bool linked,
@@ -358,7 +402,11 @@ void IOHomeControlComponent::process_received_packet_(const RadioRxPacket &packe
     const std::vector<std::string> *linked = this->registry_.linked_devices(src_id);
     detail::log_1w_remote_frame(info, linked);
     this->maybe_fire_remote_button_event_(info, linked != nullptr && !linked->empty(), src_id);
-    this->schedule_linked_remote_polls_(src_id);
+    // Id-linked devices plus, for a typed broadcast, class-linked devices — deduplicated so a
+    // device linked both ways is only touched once per press.
+    const std::vector<std::string> target_devices = this->resolve_1w_target_devices_(info, src_id);
+    const bool is_stop = this->apply_optimistic_linked_state_(info, target_devices);
+    this->schedule_device_polls_(target_devices, is_stop ? 0 : REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS);
     return;
   }
 

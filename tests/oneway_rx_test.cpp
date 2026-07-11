@@ -10,6 +10,7 @@
 #include "test_helpers.h"
 #include "stubs/radio_test_common.h"
 
+#include <algorithm>
 #include <cstring>
 
 using namespace esphome::home_io_control;
@@ -19,6 +20,7 @@ namespace {
 class RxTestableComponent : public IOHomeControlComponent {
  public:
   using IOHomeControlComponent::process_received_packet_;
+  using IOHomeControlComponent::resolve_1w_target_devices_;
   using IOHomeControlComponent::node_id_;
   using IOHomeControlComponent::initialized_;
   using IOHomeControlComponent::radio_;
@@ -261,4 +263,193 @@ TEST(OnewayRx, RemoteButtonEvent_BurstOfFourYieldsOneEvent) {
     comp.process_received_packet_(pkt);
 
   EXPECT_EQ(api_server.events_.size(), 1u) << "dedup window should collapse the 4x burst to one event";
+}
+
+// ============================================================================
+// Optimistic state for linked 1W remotes
+// ============================================================================
+
+TEST(OnewayRx, OptimisticState_LinkedDeviceGetsTargetFromCloseIntent) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);  // CLOSE -> IO target 100
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_FLOAT_EQ(dev->target, 100.0f) << "CLOSE intent should set an optimistic target of 100 (closed)";
+  EXPECT_FALSE(dev->is_stopped) << "optimistic apply should mark the device as moving";
+  EXPECT_EQ(comp.last_timeout_ms_, REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS)
+      << "the confirmation poll should still be scheduled at the normal delay for a non-STOP intent";
+}
+
+TEST(OnewayRx, OptimisticState_StopClearsTargetAndPollsImmediately) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+  comp.get_device("112233")->target = 50.0f;
+  comp.get_device("112233")->is_stopped = false;
+
+  IoFrame frame = make_1w_execute(POS_STOP, 0x00);
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "STOP intent should clear any optimistic target";
+  EXPECT_TRUE(dev->is_stopped) << "STOP must also mark the device stopped, or the HA cover UI keeps animating";
+  EXPECT_EQ(comp.last_timeout_ms_, 0u) << "STOP should schedule the confirmation poll immediately";
+}
+
+TEST(OnewayRx, OptimisticState_TypeMismatchSkipsOptimisticApplyButStillPolls) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  // BROADCAST_ROLLER targets ROLLER_SHUTTER; link a device of a different known type.
+  comp.add_device("112233", DeviceType::AWNING, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);  // CLOSE
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION)
+      << "a typed broadcast for a different device type must not optimistically move a linked device";
+  EXPECT_EQ(comp.last_timeout_ms_, REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS) << "the device should still be polled";
+}
+
+TEST(OnewayRx, OptimisticState_UnlinkedRemoteAppliesNoState) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  // Deliberately no add_linked_remote(): REMOTE_ID is not linked to "112233".
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);  // CLOSE
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "an unlinked remote's traffic must not apply optimistic state";
+}
+
+TEST(OnewayRx, OptimisticState_FavoriteIntentAppliesNoTargetButStillPolls) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+
+  IoFrame frame = make_1w_execute(POS_FAVORITE, 0x00);  // FAVORITE: no resolvable numeric target
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "FAVORITE has no known numeric target, so no optimistic claim is made";
+  EXPECT_EQ(comp.last_timeout_ms_, REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS) << "the device should still be polled";
+}
+
+TEST(OnewayRx, OptimisticState_RespectsOptimisticStateFalse) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false, /*optimistic_state=*/false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);  // CLOSE
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "optimistic_state=false must leave target untouched (poll-only)";
+  EXPECT_EQ(comp.last_timeout_ms_, REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS) << "the device should still be polled";
+}
+
+// ============================================================================
+// Class-target linked remotes
+// ============================================================================
+
+TEST(OnewayRx, OptimisticState_ClassLinkedDeviceGetsOptimisticStateWithoutIdLink) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote_class(DeviceType::ROLLER_SHUTTER, "112233");
+  // Deliberately no add_linked_remote(): "112233" is only linked by class, not by REMOTE_ID.
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);  // CLOSE, broadcast to typed ROLLER_SHUTTER
+  RadioRxPacket pkt = make_rx_packet(frame);
+  comp.process_received_packet_(pkt);
+
+  const auto *dev = comp.get_device("112233");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_FLOAT_EQ(dev->target, 100.0f) << "a class-linked device should get optimistic state from a typed broadcast";
+}
+
+TEST(OnewayRx, ResolveTargetDevices_DedupsDeviceLinkedByBothIdAndClass) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+  comp.add_linked_remote_class(DeviceType::ROLLER_SHUTTER, "112233");
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);
+  const OneWayFrameInfo info = decode_1w_frame(frame);
+
+  const auto devices = comp.resolve_1w_target_devices_(info, node_id_to_string(REMOTE_ID));
+  ASSERT_EQ(devices.size(), 1u) << "a device linked both by id and by class must be resolved exactly once";
+  EXPECT_EQ(devices[0], "112233");
+}
+
+TEST(OnewayRx, ResolveTargetDevices_UnionsIdLinkedAndClassLinkedDevices) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("112233", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_device("445566", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote(node_id_to_string(REMOTE_ID), "112233");
+  comp.add_linked_remote_class(DeviceType::ROLLER_SHUTTER, "445566");
+
+  IoFrame frame = make_1w_execute(0xC8, 0x00);
+  const OneWayFrameInfo info = decode_1w_frame(frame);
+
+  const auto devices = comp.resolve_1w_target_devices_(info, node_id_to_string(REMOTE_ID));
+  ASSERT_EQ(devices.size(), 2u);
+  EXPECT_NE(std::find(devices.begin(), devices.end(), "112233"), devices.end());
+  EXPECT_NE(std::find(devices.begin(), devices.end(), "445566"), devices.end());
+}
+
+TEST(OnewayRx, ResolveTargetDevices_UnicastFrameDoesNotFanOutToClassLinks) {
+  RxTestableComponent comp;
+  MockRadio radio;
+  setup_component(comp, radio);
+  comp.add_device("445566", DeviceType::ROLLER_SHUTTER, 0, false);
+  comp.add_linked_remote_class(DeviceType::ROLLER_SHUTTER, "445566");
+
+  // A unicast (non-broadcast) 1W frame must not resolve any class-linked devices, even if the
+  // sender happens to also address a ROLLER_SHUTTER-typed device elsewhere.
+  IoFrame frame{};
+  init_frame(frame, /*is_2w=*/false, /*start=*/true, /*end=*/true, /*low_power=*/false);
+  const uint8_t unicast_dst[NODE_ID_SIZE] = {0x11, 0x22, 0x33};
+  set_dst(frame, unicast_dst);
+  set_src(frame, REMOTE_ID);
+  const uint8_t payload[4] = {ORIGINATOR_USER_REMOTE, 0x41, 0xC8, 0x00};
+  set_cmd(frame, CMD_EXECUTE, payload, sizeof(payload));
+  const OneWayFrameInfo info = decode_1w_frame(frame);
+
+  const auto devices = comp.resolve_1w_target_devices_(info, node_id_to_string(REMOTE_ID));
+  EXPECT_TRUE(devices.empty()) << "a unicast 1W frame must not fan out to class-linked devices";
 }

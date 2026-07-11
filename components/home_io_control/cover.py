@@ -31,6 +31,7 @@ from .platform_common import (
 DEPENDENCIES = ["home_io_control"]
 
 CONF_INVERT_POSITION = "invert_position"
+CONF_OPTIMISTIC_STATE = "optimistic_state"
 
 # Internal config keys for the cover-only companion button IDs (injected by post-validator).
 CONF_FAVORITE_BUTTON_ID = "_favorite_button_id"
@@ -136,6 +137,7 @@ CONFIG_SCHEMA = cv.All(
     cover.cover_schema(IOHomeCover)
     .extend(platform_schema_extension())
     .extend({cv.Optional(CONF_INVERT_POSITION): cv.boolean})
+    .extend({cv.Optional(CONF_OPTIMISTIC_STATE, default=True): cv.boolean})
     .extend(cv.COMPONENT_SCHEMA),
     _inject_companion_ids,
 )
@@ -150,6 +152,8 @@ async def to_code(config):
 
     if CONF_INVERT_POSITION in config:
         cg.add(var.set_invert_position(config[CONF_INVERT_POSITION]))
+
+    cg.add(var.set_optimistic_state(config[CONF_OPTIMISTIC_STATE]))
 
     if CONF_FAVORITE_BUTTON_ID in config:
         favorite_config = {

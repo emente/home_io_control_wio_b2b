@@ -249,6 +249,86 @@ TEST(PlatformCover, TiltControlQueuesTiltCommand) {
       << "queued operation should be SET_TILT";
 }
 
+// ========================================================================================
+// IOHomeCover: optimistic state on HA-issued 2W commands (control())
+// ========================================================================================
+
+TEST(PlatformCover, ControlSetPositionAppliesOptimisticTargetImmediately) {
+  MockHub hub;
+  TestableCover cover;
+  cover.set_parent(&hub);
+  cover.set_device_id("ABC123");
+  hub.add_device("ABC123", DeviceType::ROLLER_SHUTTER, 0, false);
+
+  CoverCall call(&cover);
+  call.set_position(0.25);  // HA 0.25 open -> IO 75 (non-inverted)
+  cover.control(call);
+
+  const auto *dev = hub.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_FLOAT_EQ(dev->target, 75.0f) << "control() should apply the optimistic target before the queued command runs";
+  EXPECT_FALSE(dev->is_stopped) << "optimistic apply should mark the device as moving";
+}
+
+TEST(PlatformCover, ControlStopClearsOptimisticTargetImmediately) {
+  MockHub hub;
+  TestableCover cover;
+  cover.set_parent(&hub);
+  cover.set_device_id("ABC123");
+  hub.add_device("ABC123", DeviceType::ROLLER_SHUTTER, 0, false);
+  hub.get_device("ABC123")->target = 50.0f;
+  hub.get_device("ABC123")->is_stopped = false;
+
+  CoverCall call(&cover);
+  call.set_stop(true);
+  cover.control(call);
+
+  const auto *dev = hub.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "control() STOP should clear any optimistic target immediately";
+  EXPECT_TRUE(dev->is_stopped) << "control() STOP must also mark the device stopped, or the HA cover UI keeps "
+                                  "animating movement until the confirming response arrives";
+}
+
+TEST(PlatformCover, ControlCombinedPositionAndTiltAppliesOptimisticTargetImmediately) {
+  MockHub hub;
+  TestableCover cover;
+  cover.set_parent(&hub);
+  cover.set_device_id("ABC123");
+  cover.set_device_type(DeviceType::VENETIAN_BLIND);  // tilt-capable, required for the combined branch
+  hub.add_device("ABC123", DeviceType::VENETIAN_BLIND, 0, false);
+
+  CoverCall call(&cover);
+  call.set_position(0.25);  // HA 0.25 open -> IO 75 (non-inverted)
+  call.set_tilt(0.5f);
+  cover.control(call);
+
+  // Note: MockHub doesn't override queue_set_device_position_and_tilt() (unlike the other
+  // queue_* methods), so this only verifies the optimistic-target side effect, not queuing.
+  const auto *dev = hub.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_FLOAT_EQ(dev->target, 75.0f)
+      << "the combined position+tilt branch should apply the optimistic target immediately, same as position-only";
+  EXPECT_FALSE(dev->is_stopped);
+}
+
+TEST(PlatformCover, ControlRespectsOptimisticStateFalse) {
+  MockHub hub;
+  TestableCover cover;
+  cover.set_parent(&hub);
+  cover.set_device_id("ABC123");
+  hub.add_device("ABC123", DeviceType::ROLLER_SHUTTER, 0, false, /*optimistic_state=*/false);
+
+  CoverCall call(&cover);
+  call.set_position(0.25);
+  cover.control(call);
+
+  const auto *dev = hub.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "optimistic_state=false must leave target untouched (poll-only)";
+  EXPECT_EQ(hub.last_set_position(), 75u) << "the command itself should still be queued as normal";
+}
+
 TEST(PlatformCover, SupportsTiltBasedOnDeviceType) {
   MockHub hub;
   TestableCover cover;

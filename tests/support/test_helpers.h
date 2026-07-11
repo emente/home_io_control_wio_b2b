@@ -128,6 +128,11 @@ class MockPlatformHubBase : public IOHomeControlComponent {
   }
 
   void add_device(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted) override {
+    this->add_device(device_id, type, subtype, inverted, true);
+  }
+
+  void add_device(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted,
+                  bool optimistic_state) override {
     if (devices_.count(device_id))
       return;
     auto &device = devices_[device_id];
@@ -135,6 +140,29 @@ class MockPlatformHubBase : public IOHomeControlComponent {
     device.type = type;
     device.subtype = subtype;
     device.inverted = inverted;
+    device.optimistic_state = optimistic_state;
+  }
+
+  bool apply_optimistic_target(const std::string &device_id, float target_io_position) override {
+    auto it = devices_.find(device_id);
+    if (it == devices_.end() || !it->second.optimistic_state)
+      return false;
+    it->second.target = target_io_position;
+    it->second.is_stopped = false;
+    for (auto &cb : callbacks_)
+      cb(device_id, it->second);
+    return true;
+  }
+
+  bool clear_optimistic_target(const std::string &device_id) override {
+    auto it = devices_.find(device_id);
+    if (it == devices_.end() || !it->second.optimistic_state)
+      return false;
+    it->second.target = UNKNOWN_POSITION;
+    it->second.is_stopped = true;
+    for (auto &cb : callbacks_)
+      cb(device_id, it->second);
+    return true;
   }
 
   void register_device_callback(DeviceUpdateCallback cb) override { callbacks_.push_back(std::move(cb)); }

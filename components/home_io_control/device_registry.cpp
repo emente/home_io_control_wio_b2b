@@ -16,7 +16,8 @@ static constexpr const char *TAG = "home_io_control";
 
 void DeviceRegistry::add(const std::string &device_id) { add(device_id, DeviceType::UNKNOWN, 0, false); }
 
-void DeviceRegistry::add(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted) {
+void DeviceRegistry::add(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted,
+                         bool optimistic_state) {
   if (devices_.count(device_id) != 0)
     return;
   IoDevice dev{};
@@ -28,6 +29,7 @@ void DeviceRegistry::add(const std::string &device_id, DeviceType type, uint8_t 
   dev.subtype = subtype;
   if (inverted)
     dev.inverted = true;
+  dev.optimistic_state = optimistic_state;
   devices_[device_id] = dev;
 }
 
@@ -55,6 +57,35 @@ void DeviceRegistry::add_linked_remote(const std::string &remote_id, const std::
 const std::vector<std::string> *DeviceRegistry::linked_devices(const std::string &remote_id) const {
   auto it = linked_remotes_.find(remote_id);
   return (it != linked_remotes_.end()) ? &it->second : nullptr;
+}
+
+void DeviceRegistry::add_linked_remote_class(DeviceType type, const std::string &device_id) {
+  linked_remote_classes_[type].push_back(device_id);
+}
+
+const std::vector<std::string> *DeviceRegistry::linked_devices_for_class(DeviceType type) const {
+  auto it = linked_remote_classes_.find(type);
+  return (it != linked_remote_classes_.end()) ? &it->second : nullptr;
+}
+
+bool DeviceRegistry::apply_optimistic_target(const std::string &device_id, float target_io_position) {
+  auto it = devices_.find(device_id);
+  if (it == devices_.end() || !it->second.optimistic_state)
+    return false;
+  it->second.target = target_io_position;
+  it->second.is_stopped = false;
+  notify(device_id);
+  return true;
+}
+
+bool DeviceRegistry::clear_optimistic_target(const std::string &device_id) {
+  auto it = devices_.find(device_id);
+  if (it == devices_.end() || !it->second.optimistic_state)
+    return false;
+  it->second.target = UNKNOWN_POSITION;
+  it->second.is_stopped = true;
+  notify(device_id);
+  return true;
 }
 
 void DeviceRegistry::for_each_linked_remote(

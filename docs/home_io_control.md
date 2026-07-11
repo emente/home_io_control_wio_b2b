@@ -112,6 +112,8 @@ cover:
     status_poll_interval: 2s
     linked_remotes:
       - "ABCDEF"
+      - "class:awning"
+    optimistic_state: true
 ```
 
 Configuration variables:
@@ -119,11 +121,12 @@ Configuration variables:
 - `name` (Required): The entity name as shown in Home Assistant. Without a name the entity would be invisible to HA, so this field is enforced at compile time.
 - `home_io_control_id` (Optional): Reference to the `home_io_control` hub to use.
 - `io_device_id` (Required): 3-byte IO-homecontrol device ID as exactly 6 hexadecimal characters.
-- `io_device_type` (Optional): Declare the IO-homecontrol device type. Use a named value such as `awning` when available, or a raw integer such as `0x11` if pairing reports a type that does not yet have a named YAML alias. When omitted, the controller may learn the type later from radio metadata.
+- `io_device_type` (Optional): Declare the IO-homecontrol device type. Use a named value such as `awning` when available — see the "Named device types" table under Device Type and Capability Notes below for the full list and how to find your device's type — or a raw integer such as `0x11` if pairing reports a type that does not yet have a named YAML alias. When omitted, the controller may learn the type later from radio metadata.
 - `io_subtype` (Optional): Device subtype value (0–63), as reported by the device. When omitted, the controller may learn it later from radio metadata.
 - `invert_position` (Optional): Explicitly override the open/close position mapping. When omitted, the controller uses the learned device profile and automatically inverts families such as horizontal awnings once their type is known.
 - `status_poll_interval` (Optional): Poll interval used for bounded follow-up status checks while this device is expected to be changing state. The minimum supported value is 500ms. When omitted, the hub polls after commands, STOP, or overheard remote activity at the **device-reported settle hint** (fallback 3 s) until the device reports a stable state or the bounded 10-minute window expires. No idle background polling either way. See the settle-hint note below.
-- `linked_remotes` (Optional): List of remote node IDs (6 hex characters each) that control this device. When activity from a linked remote is overheard on the radio, the controller automatically polls the device for fresh status. See the Linked Remotes section below for how to find and configure remote IDs.
+- `linked_remotes` (Optional): List of remote node IDs (6 hex characters each) — or `class:<device_type>` entries (e.g. `class:awning`) to link every device of that type at once — that control this device. When activity from a linked remote is overheard on the radio, the controller automatically polls the device for fresh status. See the Linked Remotes section below for how to find and configure remote IDs, and for the `class:` form.
+- `optimistic_state` (Optional, default: `true`): Show the requested position/movement direction immediately in Home Assistant — for both HA-issued commands (open/close/set-position/stop) and commands from a linked 1W remote — instead of waiting for the confirming poll or device response. The confirming poll/response always still runs and is the source of truth; optimistic state is a UX bridge only. Set `false` to disable optimistic state for a device where you don't want HA to show assumed movement (e.g. one with an unreliable RF link where a stale optimistic state could be misleading).
 - All standard options from the ESPHome cover base schema also apply, including `id`, `device_class`, `icon`, entity metadata, MQTT options, and cover automations such as `on_opening`, `on_closing`, and `on_idle`.
 
 Notes:
@@ -577,9 +580,35 @@ TX/RX/RX_REJECT/LBT-defer/hop/phase event, in order) plus, when applicable, one 
 - **Binary light, lock, and switch** support exists, but remains experimental and has not been validated against real hardware.
 - **Raw type IDs in YAML**: `io_device_type` accepts both named values such as `awning` and raw integers such as `0x11`. Raw values are useful when pairing discovers a valid IO-homecontrol type that this project does not yet expose under a named YAML alias.
 
+### Named device types
+
+Both `io_device_type` and the `class:<device_type>` form of `linked_remotes` (see Linked Remotes below) accept these named values:
+
+| Name | Hex ID | Name | Hex ID |
+|---|---|---|---|
+| `venetian_blind` | `0x01` | `on_off_switch` | `0x0F` |
+| `roller_shutter` | `0x02` | `horizontal_awning` | `0x10` |
+| `awning` | `0x03` | `external_venetian_blind` | `0x11` |
+| `window_opener` | `0x04` | `louvre_blind` | `0x12` |
+| `garage_opener` | `0x05` | `curtain_track` | `0x13` |
+| `light` | `0x06` | `intrusion_alarm` | `0x17` |
+| `gate_opener` | `0x07` | `swinging_shutter` | `0x18` |
+| `rolling_door_opener` | `0x08` | | |
+| `lock` | `0x09` | | |
+| `blind` | `0x0A` | | |
+| `screen` | `0x0B` | | |
+| `dual_shutter` | `0x0D` | | |
+| `heating_temperature_interface` | `0x0E` | | |
+
+A device type not in this table can still be declared as a raw hex ID, in either place: `io_device_type: 0x14` or `linked_remotes: ["class:0x14"]`. Named and raw-hex entries can be mixed freely within the same `linked_remotes` list.
+
+**Finding your device's type:** the surest way is to pair it through Home Assistant and check the "Last Pairing Result" diagnostic sensor — its `type=` field reports the device's actual type name (see "Pairing Workflow" above, e.g. `type=awning`). If you already know the device (e.g. you're configuring a Somfy awning), just use the matching name from the table above.
+
 ## Linked Remotes
 
 Physical IO-Homecontrol remotes (wall switches, handheld remotes, wind sensors) use the 1W (one-way) protocol to send commands. Unlike 2W devices that address a specific device ID, 1W remotes broadcast to a type-class address (e.g., "all awning devices"). This means the controller cannot automatically detect which of your devices a particular remote controls — you need to configure the link explicitly.
+
+**This is receive-only.** The hub reacts to physical 1W remotes and sensors it overhears — decoding intent, firing events, updating linked devices — but it does not transmit 1W commands itself, and it does not control 1W-only devices (devices that have no 2W/authenticated protocol at all). Everything on this page assumes the devices you control are 2W, and that `linked_remotes` / `exposed_senders` only change how the hub *reacts* to radio traffic it overhears from other transmitters.
 
 ### Why link a remote?
 
@@ -643,6 +672,30 @@ cover:
     linked_remotes:
       - "9D6085"
 ```
+
+### Linking by device class
+
+Instead of (or alongside) individual remote node IDs, a `linked_remotes` entry can be `class:<device_type>`, matching how 1W remotes actually address a device — a typed broadcast such as "all awnings" rather than a single node. This links *every* typed broadcast targeting that class to the device, without enumerating each remote's node ID:
+
+```yaml
+cover:
+  - platform: home_io_control
+    name: "Patio Awning"
+    io_device_id: "30E1F2"
+    io_device_type: "awning"
+    linked_remotes:
+      - "class:awning"
+```
+
+`<device_type>` accepts the same named values as `io_device_type` — see the "Named device types" table under Device Type and Capability Notes below for the full list (e.g. `awning`, `roller_shutter`, `venetian_blind`) — or a raw hex ID such as `class:0x14` for a type without a named alias yet. Bare node-ID entries, named `class:` entries, and raw-hex `class:` entries can all be mixed freely in the same list, and a device linked both ways (by ID and by class) is only updated once per press — the class form is purely a convenience for "any remote that presses this device's type," it does not change how bare node IDs behave.
+
+### Optimistic state
+
+By default (`optimistic_state: true`), a linked remote's press — or an HA-issued open/close/stop/set-position command — shows the requested direction in Home Assistant immediately, before the confirming poll (linked remote) or device response (HA command) arrives. This is a pure UX bridge: the confirming poll/response always still runs and overwrites the optimistic value with the device's real reported position. Set `optimistic_state: false` on a device to disable this and fall back to polling only.
+
+Notes:
+- **Tilt-only commands are not optimistic.** Setting only a tilt value (no position) queues the command normally but does not show an optimistic state change, since tilt has no equivalent "direction" concept in the cover UI. A combined position+tilt command *does* apply the optimistic position target.
+- **Class-linked devices are safety-filtered.** When a typed broadcast (e.g. "all awnings") also fans out to `class:`-linked devices, a device is only optimistically moved if its own declared `io_device_type` matches the broadcast's target type — it is never skipped for polling, only for the optimistic nudge. This prevents an "all awnings" press from optimistically moving a device you've linked to that class but declared as a different type.
 
 ### What the decoded log tells you
 

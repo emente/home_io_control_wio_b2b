@@ -198,6 +198,91 @@ TEST(DeviceRegistry, ForEachLinkedRemoteVisitsAllEntries) {
   EXPECT_EQ(collected["RB"][1], "DB2");
 }
 
+// --- optimistic target ---
+
+TEST(DeviceRegistry, ApplyOptimisticTargetSetsTargetAndClearsStopped) {
+  DeviceRegistry reg;
+  reg.add("ABC123", DeviceType::ROLLER_SHUTTER, 0, false);
+
+  EXPECT_TRUE(reg.apply_optimistic_target("ABC123", 75.0f));
+
+  const IoDevice *dev = reg.get("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_FLOAT_EQ(dev->target, 75.0f);
+  EXPECT_FALSE(dev->is_stopped);
+}
+
+TEST(DeviceRegistry, ClearOptimisticTargetResetsTargetAndSetsStopped) {
+  DeviceRegistry reg;
+  reg.add("ABC123", DeviceType::ROLLER_SHUTTER, 0, false);
+  reg.apply_optimistic_target("ABC123", 75.0f);
+
+  EXPECT_TRUE(reg.clear_optimistic_target("ABC123"));
+
+  const IoDevice *dev = reg.get("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION);
+  EXPECT_TRUE(dev->is_stopped) << "clearing the optimistic target on STOP must also mark the "
+                                  "device stopped, or the HA cover UI keeps animating movement";
+}
+
+TEST(DeviceRegistry, ApplyOptimisticTargetOnUnknownDeviceReturnsFalseWithoutCrashing) {
+  DeviceRegistry reg;
+  EXPECT_FALSE(reg.apply_optimistic_target("UNKNOWN1", 50.0f));
+}
+
+TEST(DeviceRegistry, ClearOptimisticTargetOnUnknownDeviceReturnsFalseWithoutCrashing) {
+  DeviceRegistry reg;
+  EXPECT_FALSE(reg.clear_optimistic_target("UNKNOWN1"));
+}
+
+TEST(DeviceRegistry, OptimisticTargetNoOpWhenOptimisticStateDisabled) {
+  DeviceRegistry reg;
+  reg.add("ABC123", DeviceType::ROLLER_SHUTTER, 0, false, /*optimistic_state=*/false);
+
+  EXPECT_FALSE(reg.apply_optimistic_target("ABC123", 75.0f));
+  EXPECT_FALSE(reg.clear_optimistic_target("ABC123"));
+
+  const IoDevice *dev = reg.get("ABC123");
+  ASSERT_NE(dev, nullptr);
+  EXPECT_EQ(dev->target, UNKNOWN_POSITION) << "optimistic_state=false must leave target untouched";
+}
+
+// --- linked remote class lookup ---
+
+TEST(DeviceRegistry, LinkedDevicesForClassReturnsAllSameTypeDevices) {
+  DeviceRegistry reg;
+  reg.add_linked_remote_class(DeviceType::AWNING, "DEVICE1");
+  reg.add_linked_remote_class(DeviceType::AWNING, "DEVICE2");
+
+  const std::vector<std::string> *linked = reg.linked_devices_for_class(DeviceType::AWNING);
+  ASSERT_NE(linked, nullptr);
+  ASSERT_EQ(linked->size(), 2u);
+  EXPECT_EQ((*linked)[0], "DEVICE1");
+  EXPECT_EQ((*linked)[1], "DEVICE2");
+}
+
+TEST(DeviceRegistry, LinkedDevicesForClassReturnsNullptrForUnknownClass) {
+  DeviceRegistry reg;
+  reg.add_linked_remote_class(DeviceType::AWNING, "DEVICE1");
+  EXPECT_EQ(reg.linked_devices_for_class(DeviceType::ROLLER_SHUTTER), nullptr)
+      << "a class with no linked devices must not be confused with a different registered class";
+}
+
+TEST(DeviceRegistry, IdLinkingAndClassLinkingAreIndependentMaps) {
+  DeviceRegistry reg;
+  reg.add_linked_remote("REMOTE1", "DEVICE1");
+  reg.add_linked_remote_class(DeviceType::AWNING, "DEVICE1");
+
+  const std::vector<std::string> *by_id = reg.linked_devices("REMOTE1");
+  const std::vector<std::string> *by_class = reg.linked_devices_for_class(DeviceType::AWNING);
+  ASSERT_NE(by_id, nullptr);
+  ASSERT_NE(by_class, nullptr);
+  EXPECT_EQ((*by_id)[0], "DEVICE1");
+  EXPECT_EQ((*by_class)[0], "DEVICE1")
+      << "the same device may be linked both by remote id and by class; the two maps are independent";
+}
+
 // --- mutable iteration (begin/end) ---
 
 TEST(DeviceRegistry, RangeForIterationAllowsMutation) {

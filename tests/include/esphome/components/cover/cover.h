@@ -47,6 +47,10 @@ class CoverCall {
     tilt_ = tilt;
     return *this;
   }
+  CoverCall &set_stop(bool stop) {
+    stop_ = stop;
+    return *this;
+  }
   bool get_stop() const { return stop_; }
   std::optional<float> get_position() const { return position_; }
   const std::optional<float> &get_tilt() const { return tilt_; }

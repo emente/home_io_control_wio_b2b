@@ -286,6 +286,24 @@ void decode_1w_main_intent(uint8_t main0, uint8_t main1, char *out, size_t out_s
   snprintf(out, out_size, "0x%02X", main0);
 }
 
+std::optional<float> oneway_intent_to_target(uint8_t main0, uint8_t main1) {
+  (void) main1;
+  // Special codes with no settled position (or explicitly "stop") never resolve to a target;
+  // mirrors decode_1w_main_intent()'s branch order so the two stay in agreement.
+  if (main0 == POS_STOP || main0 == POS_FAVORITE || main0 == POS_UNKNOWN || main0 == POS_FORCE_OPEN ||
+      main0 == POS_SECURED_TARGET || main0 == POS_DEFAULT) {
+    return std::nullopt;
+  }
+  // Wire value is position_percent * 2 (0=open, 200=closed); divide as an integer first,
+  // matching decode_1w_main_intent()'s percent computation, then convert to float.
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+  if (main0 <= 200) {
+    uint8_t const percent = main0 / 2;
+    return static_cast<float>(percent);
+  }
+  return std::nullopt;
+}
+
 /// @brief Minimum data bytes for decode of execute/activate‑mode intent fields.
 static constexpr uint8_t ONEWAY_EXECUTE_MIN_DATA_LEN = 4;  // originator(1) + ACEI(1) + main[2].
 
@@ -304,6 +322,8 @@ OneWayFrameInfo decode_1w_frame(const IoFrame &frame) {
     info.has_intent = true;
     info.originator = frame.data[0];
     info.acei_level = (frame.data[1] & ACEI_LEVEL_MASK) >> ACEI_LEVEL_SHIFT;
+    info.main0 = frame.data[2];
+    info.main1 = frame.data[3];
     decode_1w_main_intent(frame.data[2], frame.data[3], info.intent, sizeof(info.intent));
   }
 

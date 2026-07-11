@@ -28,6 +28,7 @@ from . import (
     device_type_expression,
     validate_device_id,
     validate_device_type,
+    validate_linked_remote_entry,
     validate_status_poll_interval,
 )
 
@@ -98,7 +99,7 @@ def platform_schema_extension():
         cv.Required(CONF_DEVICE_ID): validate_device_id,
         cv.Optional(CONF_DEVICE_TYPE): validate_device_type,
         cv.Optional(CONF_SUBTYPE): cv.int_range(min=0, max=63),
-        cv.Optional(CONF_LINKED_REMOTES): cv.ensure_list(validate_device_id),
+        cv.Optional(CONF_LINKED_REMOTES): cv.ensure_list(validate_linked_remote_entry),
         cv.Optional(CONF_STATUS_POLL_INTERVAL): validate_status_poll_interval,
     }
 
@@ -126,7 +127,17 @@ async def wire_device_binding(var, parent, config):
 
     if CONF_LINKED_REMOTES in config:
         for remote_id in config[CONF_LINKED_REMOTES]:
-            cg.add(parent.add_linked_remote(remote_id, config[CONF_DEVICE_ID]))
+            if remote_id.startswith("class:"):
+                # validate_linked_remote_entry() already normalized this to 'class:0x<HH>'.
+                type_value = int(remote_id.split(":", 1)[1], 16)
+                cg.add(
+                    parent.add_linked_remote_class(
+                        device_type_expression(type_value),
+                        config[CONF_DEVICE_ID],
+                    )
+                )
+            else:
+                cg.add(parent.add_linked_remote(remote_id, config[CONF_DEVICE_ID]))
 
 
 async def create_device_name_sensor(config, parent):

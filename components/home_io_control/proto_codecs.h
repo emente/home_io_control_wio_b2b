@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace esphome {
@@ -137,6 +138,17 @@ DeviceType broadcast_target_type(const uint8_t addr[NODE_ID_SIZE]);
 /// @param out_size Size of the output buffer.
 void decode_1w_main_intent(uint8_t main0, uint8_t main1, char *out, size_t out_size);
 
+/// @brief Resolve a 1W main-byte pair to an optimistic IO target position, if unambiguous.
+///
+/// Shares decode_1w_main_intent()'s special-code checks so the two never disagree. Returns
+/// empty for POS_STOP (the caller must clear any optimistic target instead — stop is not a
+/// target) and for codes with no settled position (FAVORITE/VENT/FORCE_OPEN/SECURED_TARGET/
+/// DEFAULT/UNKNOWN) — those cases still get a confirmation poll, just no optimistic claim.
+/// @param main0 First main byte (position or special code).
+/// @param main1 Second main byte (modifier); unused by every branch that resolves a target.
+/// @return IO target position (0=open, 100=closed) if resolvable; empty otherwise.
+std::optional<float> oneway_intent_to_target(uint8_t main0, uint8_t main1);
+
 /// @brief Buffer size for the decoded 1W main-intent string.
 static constexpr size_t ONEWAY_INTENT_BUFFER_SIZE = 24;
 
@@ -153,7 +165,9 @@ struct OneWayFrameInfo {
   uint8_t originator{0};                     ///< Command originator byte (e.g., ORIGINATOR_USER_REMOTE).
   uint8_t acei_level{0};                     ///< ACEI priority level (0–7).
   char intent[ONEWAY_INTENT_BUFFER_SIZE]{};  ///< Human-readable command intent (e.g., "CLOSE").
-  uint8_t data_len{0};                       ///< Raw data length (for commands without decoded intent).
+  uint8_t main0{0};     ///< Raw first main byte (has_intent only); feeds oneway_intent_to_target().
+  uint8_t main1{0};     ///< Raw second main byte (has_intent only); feeds oneway_intent_to_target().
+  uint8_t data_len{0};  ///< Raw data length (for commands without decoded intent).
 };
 
 /// @brief Decode a parsed 1W frame into a structured OneWayFrameInfo.

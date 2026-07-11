@@ -169,6 +169,34 @@ class IOHomeControlComponent : public Component,
     this->registry_.add_linked_remote(remote_id, device_id);
   }
 
+  /// Declare that a device class's typed 1W broadcasts (e.g. "all awnings") also apply to
+  /// @p device_id, matching how 1W remotes address a device class rather than a single node.
+  /// @param type      Device class the broadcast targets.
+  /// @param device_id Node ID of the device to add to that class.
+  void add_linked_remote_class(DeviceType type, const std::string &device_id) {
+    this->registry_.add_linked_remote_class(type, device_id);
+  }
+
+  /// Set an optimistic target position ahead of a confirming poll/response, and notify.
+  /// No-op when the device is unknown or has `optimistic_state == false`. See
+  /// DeviceRegistry::apply_optimistic_target() for the full contract.
+  /// Virtual (like add_device/get_device) so platform unit tests can substitute a mock registry.
+  /// @param device_id Target device ID.
+  /// @param target_io_position Target position in IO units (0=open, 100=closed).
+  /// @return true if the optimistic state was applied.
+  virtual bool apply_optimistic_target(const std::string &device_id, float target_io_position) {
+    return this->registry_.apply_optimistic_target(device_id, target_io_position);
+  }
+
+  /// Clear a device's optimistic target (e.g. on STOP), and notify.
+  /// No-op when the device is unknown or has `optimistic_state == false`.
+  /// Virtual (like add_device/get_device) so platform unit tests can substitute a mock registry.
+  /// @param device_id Target device ID.
+  /// @return true if the optimistic target was cleared.
+  virtual bool clear_optimistic_target(const std::string &device_id) {
+    return this->registry_.clear_optimistic_target(device_id);
+  }
+
   /// Allow a 1W sender (identified by its node ID) to fire the `esphome.home_io_control_sender_event`
   /// event to Home Assistant. "Sender" is deliberately broader than "remote": the same 1W broadcast
   /// mechanism carries handheld/wall remotes and wind/rain sensors alike (they differ only in the
@@ -195,12 +223,21 @@ class IOHomeControlComponent : public Component,
   /// overload when type/subtype/inverted come from YAML declarations.
   /// @param device_id Hexadecimal node ID string.
   virtual void add_device(const std::string &device_id);
-  /// Add a device to the registry with full metadata from YAML.
+  /// Add a device to the registry with full metadata from YAML. Optimistic state defaults to
+  /// enabled; use the 5-arg overload when the YAML declaration overrides it.
   /// @param device_id Hexadecimal node ID string.
   /// @param type Device type from YAML declaration (UNKNOWN if not specified).
   /// @param subtype Device subtype from YAML declaration.
   /// @param inverted Position inversion flag from YAML declaration.
   virtual void add_device(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted);
+  /// Add a device to the registry with full metadata from YAML, including the optimistic-state flag.
+  /// @param device_id Hexadecimal node ID string.
+  /// @param type Device type from YAML declaration (UNKNOWN if not specified).
+  /// @param subtype Device subtype from YAML declaration.
+  /// @param inverted Position inversion flag from YAML declaration.
+  /// @param optimistic_state Whether optimistic target updates are allowed for this device.
+  virtual void add_device(const std::string &device_id, DeviceType type, uint8_t subtype, bool inverted,
+                          bool optimistic_state);
   /// Retrieve a device by ID; returns nullptr if not found.
   /// @param device_id Hexadecimal node ID.
   /// @return Pointer to IoDevice, or nullptr.
@@ -344,9 +381,35 @@ class IOHomeControlComponent : public Component,
   /// @param device_id ID of the device to poll.
   /// @param initial_delay_ms Delay before the first follow-up poll.
   void begin_status_poll_tracking_(const std::string &device_id, uint32_t initial_delay_ms);
+  /// Schedule status polls for a fixed list of devices (shared by the id-linked and
+  /// class-linked 1W paths, and by schedule_linked_remote_polls_()).
+  /// @param device_ids Devices to poll.
+  /// @param delay_ms Poll delay in milliseconds.
+  void schedule_device_polls_(const std::vector<std::string> &device_ids, uint32_t delay_ms);
   /// Schedule status polls for all devices associated with a linked remote.
   /// @param remote_id Source node ID of the remote.
-  void schedule_linked_remote_polls_(const std::string &remote_id);
+  /// @param delay_ms Poll delay; default REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS. A STOP intent
+  ///        passes 0 (position settles immediately, no need to wait out the usual travel-time
+  ///        assumption behind the default delay).
+  void schedule_linked_remote_polls_(const std::string &remote_id,
+                                     uint32_t delay_ms = REMOTE_ACTIVITY_STATUS_POLL_DELAY_MS);
+  /// Resolve the set of devices a 1W frame should affect: devices linked to the sending remote
+  /// by node ID, plus — when the frame targets a typed broadcast (e.g. "all awnings") — devices
+  /// linked to that device class, deduplicated so a device linked both ways is touched once.
+  /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
+  /// @param src_id Sender's node ID as a string (already computed by the caller).
+  /// @return Deduplicated device IDs (may be empty).
+  [[nodiscard]] std::vector<std::string> resolve_1w_target_devices_(const OneWayFrameInfo &info,
+                                                                    const std::string &src_id) const;
+  /// Apply optimistic target state to every device in @p device_ids, when the decoded frame
+  /// carries a resolvable intent. Skips devices whose known type doesn't match the frame's
+  /// typed-broadcast target (an "all awnings" press must not optimistically move a linked
+  /// shutter — it is still polled by schedule_device_polls_()). No-op per device when that
+  /// device has `optimistic_state == false` (see DeviceRegistry::apply_optimistic_target()).
+  /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
+  /// @param device_ids Devices to apply optimistic state to (see resolve_1w_target_devices_()).
+  /// @return true if the intent resolved to a STOP (caller should poll immediately).
+  bool apply_optimistic_linked_state_(const OneWayFrameInfo &info, const std::vector<std::string> &device_ids);
   /// Fire the remote-button HA event for a decoded 1W frame, if the sender is exposed.
   /// DEBUG-logs the reason when it does not fire (API disconnected / sender not exposed) so a
   /// live log capture can distinguish "never reached this check" from "reached it and skipped".

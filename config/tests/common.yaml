@@ -44,6 +44,7 @@ cover:
     io_device_id: "FEEB1E"
     device_class: awning
     io_device_type: "awning"
+    linked_remotes: ["class:awning", "class:0x14"]
 
 light:
   - platform: home_io_control

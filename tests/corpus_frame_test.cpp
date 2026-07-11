@@ -65,8 +65,9 @@ TEST_P(CorpusFrameRoundTrip, WireInvariantsHoldForEveryFrame) {
     }
 
     // 4. Per-frame expectations, where present.
-    if (cf.has_cmd)
+    if (cf.has_cmd) {
       EXPECT_EQ(parsed.cmd, cf.cmd) << "cmd expectation mismatch";
+    }
     if (cf.has_flags) {
       EXPECT_EQ(is_start(parsed), cf.start) << "start-flag expectation mismatch";
       EXPECT_EQ(is_end(parsed), cf.end) << "end-flag expectation mismatch";
