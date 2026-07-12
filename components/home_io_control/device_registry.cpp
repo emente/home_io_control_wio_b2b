@@ -72,6 +72,16 @@ bool DeviceRegistry::apply_optimistic_target(const std::string &device_id, float
   auto it = devices_.find(device_id);
   if (it == devices_.end() || !it->second.optimistic_state)
     return false;
+  // Logs the raw (non-inverted) IO-protocol values the entity layer will compare against —
+  // cross-check against platform_cover.cpp::on_device_update_()'s invert-aware direction math
+  // when verifying a specific device's optimistic behavior.
+  if (it->second.position == UNKNOWN_POSITION) {
+    ESP_LOGD(TAG, "Device %s: optimistic target=%.0f (inverted=%s, last reported position=unknown)", device_id.c_str(),
+             target_io_position, YESNO(it->second.inverted));
+  } else {
+    ESP_LOGD(TAG, "Device %s: optimistic target=%.0f (inverted=%s, last reported position=%.0f)", device_id.c_str(),
+             target_io_position, YESNO(it->second.inverted), it->second.position);
+  }
   it->second.target = target_io_position;
   it->second.is_stopped = false;
   notify(device_id);
@@ -82,6 +92,7 @@ bool DeviceRegistry::clear_optimistic_target(const std::string &device_id) {
   auto it = devices_.find(device_id);
   if (it == devices_.end() || !it->second.optimistic_state)
     return false;
+  ESP_LOGD(TAG, "Device %s: optimistic stop", device_id.c_str());
   it->second.target = UNKNOWN_POSITION;
   it->second.is_stopped = true;
   notify(device_id);

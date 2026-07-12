@@ -117,11 +117,21 @@ uint32_t compute_status_update_delay_ms(const IoDevice &dev, const StatusPollPol
 /// @param dev Device record to update.
 /// @param frame Private-response frame.
 /// @param policy Poll policy for scheduling follow-up polls.
-void apply_private_response_status(const std::string &id, IoDevice &dev, const IoFrame &frame,
-                                   StatusPollPolicy &policy) {
+/// @param trust_position False to skip decoding target/current from `frame` — the immediate
+/// reply to our own just-sent CMD_EXECUTE has been observed (real hardware, see
+/// tests/corpus/captures/somfy_awning/execute_ack_reports_stale_target_*.yaml) echoing
+/// pre-command target/current values rather than the freshly-commanded target. `is_stopped` is
+/// still applied either way; the optimistic target already set by the caller (or the follow-up
+/// status poll a few seconds later) remains the source of truth for target/current in that case.
+void apply_private_response_status(const std::string &id, IoDevice &dev, const IoFrame &frame, StatusPollPolicy &policy,
+                                   bool trust_position = true) {
   dev.is_stopped = (frame.data[STATUS_STOPPED_FLAGS_OFFSET] & STATUS_STOPPED) != 0;
   dev.last_status = millis();
-  decode_status_fields(dev, frame, PRIVATE_RESPONSE_TARGET_OFFSET, PRIVATE_RESPONSE_CURRENT_OFFSET, true);
+  if (trust_position) {
+    decode_status_fields(dev, frame, PRIVATE_RESPONSE_TARGET_OFFSET, PRIVATE_RESPONSE_CURRENT_OFFSET, true);
+  } else {
+    detail::normalize_stopped_state(dev);
+  }
 
   if (dev.is_stopped || !policy.is_tracking_active(id, dev.last_status)) {
     policy.clear(id);
@@ -279,7 +289,7 @@ void IOHomeControlComponent::maybe_fire_sender_event_(const OneWayFrameInfo &inf
   this->fire_homeassistant_event(detail::ONEWAY_SENDER_EVENT, detail::build_sender_event_data(info, linked));
 }
 
-void IOHomeControlComponent::update_device_status_(const IoFrame &frame) {
+void IOHomeControlComponent::update_device_status_(const IoFrame &frame, bool trust_position) {
   const std::string id = node_id_to_string(frame.src);
   IoDevice *device_ptr = this->registry_.get(id);
   if (device_ptr == nullptr) {
@@ -295,9 +305,10 @@ void IOHomeControlComponent::update_device_status_(const IoFrame &frame) {
     }
 
     // CMD_PRIVATE_RESP (0x04) serves as the reply to both status polls (0x03) and execute
-    // commands (0x00). The position fields below are shared across both response types, so
-    // normalize them once here before the entity layer decides how to present the state.
-    apply_private_response_status(id, dev, frame, this->poll_policy_);
+    // commands (0x00). The position fields are shared across both response types, but the
+    // immediate reply to our own execute command is not necessarily trustworthy for them (see
+    // apply_private_response_status()'s trust_position parameter).
+    apply_private_response_status(id, dev, frame, this->poll_policy_, trust_position);
     detail::log_status_update(id, dev);
     this->notify_device_update_(id);
     return;

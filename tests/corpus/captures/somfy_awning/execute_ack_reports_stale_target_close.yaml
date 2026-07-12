@@ -1,0 +1,50 @@
+id: execute_ack_reports_stale_target_close
+description: >
+  The device's immediate reply to an EXECUTE(close, target=0%) command reports a stale
+  target=22% — its position from before this command — instead of 0%. Verifies the same
+  quick-ack quirk with different byte values, confirming this is a real device behavior and not
+  an offset-decoding mistake.
+source:
+  device: "Somfy Sunea IO awning motor"
+  captured_with: heltec-v3
+  firmware: null
+  date: 2026-07-12
+  origin: own-hardware
+  issue: null
+key: unknown
+frames:
+  - dir: tx
+    t_ms: 0
+    freq: 868950000
+    hex: "50 20 30 E1 F2 C0 FF EE 00 01 43 00 00 80 D8 06 00"
+    crc: absent
+    note: "EXECUTE, position=0 (close), START"
+  - dir: rx
+    t_ms: 80
+    freq: 868950000
+    hex: "0E 00 C0 FF EE 30 E1 F2 3C 12 4D BD A7 1F 4B"
+    crc: absent
+    note: "challenge request, challenge = 12 4D BD A7 1F 4B"
+  - dir: tx
+    t_ms: 80
+    freq: 868950000
+    hex: "0E 00 30 E1 F2 C0 FF EE 3D 0D 49 04 06 8D 5B"
+    crc: absent
+    note: "challenge response (key unknown, HMAC not verifiable)"
+  - dir: rx
+    t_ms: 84
+    freq: 868950000
+    hex: "8E 00 C0 FF EE 30 E1 F2 04 2C 80 2B FD 00 00"
+    crc: absent
+    note: "quick EXECUTE-ack, END — target bytes (0x2BFD -> 22%) echo the device's pre-command position, not the just-commanded target=0"
+expect:
+  exchange:
+    kind: authenticated_command
+    outcome: success
+  frames:
+    - {cmd: 0x00, start: true, end: false, protocol: 2w}
+    - {cmd: 0x3C, start: false, end: false, protocol: 2w, classification: REQUIRE_AUTH}
+    - {cmd: 0x3D, start: false, end: false, protocol: 2w}
+    - {cmd: 0x04, start: false, end: true, protocol: 2w, classification: ACCEPT}
+  device:
+    reported_position: 0

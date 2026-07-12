@@ -370,7 +370,12 @@ class IOHomeControlComponent : public Component,
   /// Extract supported position or metadata info from a response frame and merge it into the device record.
   /// @param frame IoFrame containing a supported inbound command such as CMD_PRIVATE_RESP,
   /// CMD_STATUS_UPDATE, CMD_GET_NAME_RESP, or CMD_GET_INFO2_RESP.
-  void update_device_status_(const IoFrame &frame);
+  /// @param trust_position False to apply `is_stopped` but skip target/position decode for a
+  /// CMD_PRIVATE_RESP — the immediate reply to our own just-sent CMD_EXECUTE echoes stale
+  /// pre-command target/current values on at least some devices (see
+  /// tests/corpus/captures/somfy_awning/execute_ack_reports_stale_target_*.yaml), so
+  /// execute_request_and_update_() passes false there; every other caller trusts as before.
+  void update_device_status_(const IoFrame &frame, bool trust_position = true);
   /// Schedule a delayed status poll for a registered device using the Component timeout API.
   /// @param device_id ID of the device to poll.
   /// @param delay_ms Delay in milliseconds before polling.

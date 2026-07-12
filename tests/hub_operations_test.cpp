@@ -603,6 +603,68 @@ TEST(HubOperations, ShortPrivateResponseSixBytesIsAcceptedAndSchedulesSettlePoll
       << "hint-less moving reply should settle at the default motion-tracking delay";
 }
 
+TEST(HubOperations, ExecuteReplyDoesNotOverwriteTargetOrPositionWithStaleValues) {
+  // Real hardware showed the immediate reply to a just-sent CMD_EXECUTE can carry stale
+  // pre-command target/current bytes rather than the freshly-commanded target — see
+  // tests/corpus/captures/somfy_awning/execute_ack_reports_stale_target_*.yaml. Trusting them
+  // clobbers a correct optimistic UI state with a wrong one for a few seconds until the next
+  // status poll self-corrects. update_device_status_()'s trust_position parameter fixes this:
+  // an EXECUTE's own reply updates is_stopped but leaves target/position alone.
+  TestableComponent comp;
+  MockRadio radio;
+  setup_cover_component(comp, radio);
+
+  auto *dev = comp.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  dev->target = 77.0F;
+  dev->position = 88.0F;
+
+  // Decodes to target=0%, position=50%, moving — neither matches the sentinel values above nor
+  // the position=50 being commanded below, so any change would prove the reply was (wrongly) trusted.
+  IoFrame resp = build_short_moving_status_response(comp.node_id_);
+  uint8_t raw[64];
+  uint8_t raw_len = serialize(resp, raw, sizeof(raw));
+  RadioRxPacket pkt{};
+  pkt.len = raw_len;
+  memcpy(pkt.data, raw, raw_len);
+  pkt.freq_hz = FREQ_CH2;
+  radio.queue_rx(pkt);
+
+  EXPECT_TRUE(comp.set_device_position("ABC123", 50));
+
+  EXPECT_FLOAT_EQ(dev->target, 77.0F) << "EXECUTE's own reply must not overwrite target with stale data";
+  EXPECT_FLOAT_EQ(dev->position, 88.0F) << "EXECUTE's own reply must not overwrite position with stale data";
+  EXPECT_FALSE(dev->is_stopped) << "is_stopped is still applied from the reply";
+}
+
+TEST(HubOperations, StatusPollReplyStillTrustsTargetAndPosition) {
+  // Contrast with the test above: a reply to our own status poll (request_device_status(), not
+  // set_device_position()) must still be trusted for target/position as before — only the
+  // EXECUTE command's own reply is suspect.
+  TestableComponent comp;
+  MockRadio radio;
+  setup_cover_component(comp, radio);
+
+  auto *dev = comp.get_device("ABC123");
+  ASSERT_NE(dev, nullptr);
+  dev->target = 77.0F;
+  dev->position = 88.0F;
+
+  IoFrame resp = build_short_moving_status_response(comp.node_id_);
+  uint8_t raw[64];
+  uint8_t raw_len = serialize(resp, raw, sizeof(raw));
+  RadioRxPacket pkt{};
+  pkt.len = raw_len;
+  memcpy(pkt.data, raw, raw_len);
+  pkt.freq_hz = FREQ_CH2;
+  radio.queue_rx(pkt);
+
+  EXPECT_TRUE(comp.request_device_status("ABC123"));
+
+  EXPECT_FLOAT_EQ(dev->target, 0.0F) << "a status-poll reply must still be trusted for target";
+  EXPECT_FLOAT_EQ(dev->position, 50.0F) << "a status-poll reply must still be trusted for position";
+}
+
 TEST(HubOperations, QueueRequestDeviceStatusDeduplicatesPerDevice) {
   TestableComponent comp;
   MockRadio radio;

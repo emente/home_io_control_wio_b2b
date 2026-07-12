@@ -92,7 +92,11 @@ bool IOHomeControlComponent::execute_request_and_update_(const std::string &devi
   if (retry_after_fail_ms != 0)
     this->poll_policy_.clear_failure_streaks(device_id);
 
-  this->update_device_status_(response);
+  // The immediate reply to our own CMD_EXECUTE (position/tilt/stop/favorite/vent) is not
+  // trustworthy for target/current position on at least some devices — see
+  // update_device_status_()'s trust_position doc comment. Every other request we send
+  // (status poll, get name, ...) keeps trusting its reply as before.
+  this->update_device_status_(response, request.cmd != CMD_EXECUTE);
   return true;
 }
 
