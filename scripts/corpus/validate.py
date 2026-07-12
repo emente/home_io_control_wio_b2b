@@ -9,7 +9,11 @@ Checks every capture YAML under tests/corpus/captures/**/*.yaml:
     non-CRC byte count — mirrors proto_frame.cpp parse()/frame_length();
   * CRC-CCITT (poly 0x1021 reversed = 0x8408, init 0x0000) matches the trailing 2 bytes where
     `crc: present` — ported from crc_ccitt() in proto_frame.cpp;
-  * duplicate `id` across the whole corpus is a hard error.
+  * duplicate `id` across the whole corpus is a hard error;
+  * `expect.*` keys are restricted to the set build.py actually consumes, and `expect.frames`
+    cannot have more entries than were captured — both are otherwise silently accepted by
+    build.py's dict.get()/index-bounded lookups, defeating the "expectations are
+    human-verified" rule (see tests/corpus/README.md).
 
 `key: corpus` cryptographic promises (HMAC / key-transfer payload verification against the
 public corpus key) are not yet checked here — that needs a Python AES/HMAC port and arrives
@@ -37,6 +41,16 @@ ALLOWED_KEY_MODES = {"corpus", "unknown"}
 ALLOWED_ORIGINS = {"own-hardware", "github-issue", "synthetic-bootstrap"}
 ALLOWED_DIRS = {"tx", "rx"}
 ALLOWED_CRC = {"present", "absent"}
+
+# --- Mirrors the expect-schema keys scripts/corpus/build.py actually consumes -------------
+# A key outside these sets is silently ignored by build.py (dict.get() just returns None), so
+# a typo'd expectation (e.g. `cmdd:` instead of `cmd:`) would never be checked despite the human
+# believing they wrote a verified expectation. Fail loudly here instead.
+ALLOWED_EXPECT_KEYS = {"frames", "exchange", "device", "oneway"}
+ALLOWED_EXPECT_FRAME_KEYS = {"cmd", "start", "end", "protocol", "classification", "hmac_valid"}
+ALLOWED_EXPECT_EXCHANGE_KEYS = {"kind", "outcome"}
+ALLOWED_EXPECT_DEVICE_KEYS = {"reported_position", "name"}
+ALLOWED_EXPECT_ONEWAY_KEYS = {"intent", "target_type", "originator", "acei"}
 
 
 class ValidationError(Exception):
@@ -106,6 +120,47 @@ def validate_frame(frame: dict, index: int, capture_id: str) -> None:
         )
 
 
+def require_known_keys(mapping: dict, allowed: set, context: str) -> None:
+    unknown = set(mapping.keys()) - allowed
+    require(not unknown, f"{context}: unknown key(s) {sorted(unknown)}; expected one of {sorted(allowed)}")
+
+
+def validate_expect(expect: dict, frame_count: int, capture_id: str) -> None:
+    """Fail loudly on unknown expect.* keys and on more expect.frames entries than were captured
+    — both are silently accepted by build.py today, defeating the "expectations are
+    human-verified" rule (the extra/misspelled expectation is simply never checked).
+    """
+    require(isinstance(expect, dict), f"{capture_id}: 'expect' must be a mapping")
+    require_known_keys(expect, ALLOWED_EXPECT_KEYS, f"{capture_id}: expect")
+
+    expect_frames = expect.get("frames")
+    if expect_frames is not None:
+        require(isinstance(expect_frames, list), f"{capture_id}: expect.frames must be a list")
+        require(
+            len(expect_frames) <= frame_count,
+            f"{capture_id}: expect.frames has {len(expect_frames)} entries but only {frame_count} "
+            "frame(s) were captured — the extra entries would be silently ignored by build.py",
+        )
+        for index, expect_frame in enumerate(expect_frames):
+            require(isinstance(expect_frame, dict), f"{capture_id}: expect.frames[{index}] must be a mapping")
+            require_known_keys(expect_frame, ALLOWED_EXPECT_FRAME_KEYS, f"{capture_id}: expect.frames[{index}]")
+
+    exchange = expect.get("exchange")
+    if exchange is not None:
+        require(isinstance(exchange, dict), f"{capture_id}: expect.exchange must be a mapping")
+        require_known_keys(exchange, ALLOWED_EXPECT_EXCHANGE_KEYS, f"{capture_id}: expect.exchange")
+
+    device = expect.get("device")
+    if device is not None:
+        require(isinstance(device, dict), f"{capture_id}: expect.device must be a mapping")
+        require_known_keys(device, ALLOWED_EXPECT_DEVICE_KEYS, f"{capture_id}: expect.device")
+
+    oneway = expect.get("oneway")
+    if oneway is not None:
+        require(isinstance(oneway, dict), f"{capture_id}: expect.oneway must be a mapping")
+        require_known_keys(oneway, ALLOWED_EXPECT_ONEWAY_KEYS, f"{capture_id}: expect.oneway")
+
+
 def validate_capture(data: dict, path: Path) -> str:
     for field in ("id", "description", "source", "key", "frames"):
         require(field in data, f"{path}: missing required top-level field '{field}'")
@@ -127,6 +182,9 @@ def validate_capture(data: dict, path: Path) -> str:
     require(isinstance(frames, list) and len(frames) > 0, f"{capture_id}: 'frames' must be a non-empty list")
     for index, frame in enumerate(frames):
         validate_frame(frame, index, capture_id)
+
+    if "expect" in data:
+        validate_expect(data["expect"], len(frames), capture_id)
 
     if data["key"] == "corpus":
         print(f"  SKIP (crypto validation arrives in a later tool version): {capture_id}")

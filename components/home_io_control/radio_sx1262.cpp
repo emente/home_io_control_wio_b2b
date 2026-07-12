@@ -35,8 +35,10 @@ namespace home_io_control {
 static const char *const TAG = "home_io_control.sx1262";
 static const uint8_t SX1262_SYNC_WORD_PARAM_24_BITS = 0x18;
 // Fixed probe length chosen from captures of 23-25 byte protocol frames after UART packing
-// and CRC appending. 32 bytes is large enough to preserve complete traffic without relying on
-// the chip's variable-length engine, which consistently truncated the useful payload.
+// and CRC appending: the longest frame (25 bytes + 2 CRC) UART-packs to 34 raw bytes, so 48
+// bytes preserves complete traffic (with margin for leading noise before the frame start)
+// without relying on the chip's variable-length engine, which consistently truncated the
+// useful payload.
 static const uint8_t SX1262_RX_PROBE_PACKET_LEN = 48;
 
 // === SPI Communication (opcode-based) ===

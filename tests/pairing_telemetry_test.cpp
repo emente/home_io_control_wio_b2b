@@ -96,11 +96,15 @@ TEST(PairingTelemetry, BeginResetsAllState) {
   telemetry.set_phase(pairing::PairingState::WAIT_DISCOVER_RESPONSE);
   telemetry.increment_discovery_attempt();
   telemetry.record_lbt_defer(-40);
+  for (int i = 0; i < PAIRING_TELEMETRY_MAX_EVENTS + 1; i++)
+    telemetry.record_tx(CMD_DISCOVER_REQ);
+  ASSERT_TRUE(telemetry.truncated()) << "sanity: this attempt should have overflowed the event array";
 
   telemetry.begin();
 
   EXPECT_EQ(telemetry.event_count(), 0u);
   EXPECT_EQ(telemetry.heard_count(), 0u);
+  EXPECT_FALSE(telemetry.truncated());
   EXPECT_EQ(telemetry.phase(), pairing::PairingState::IDLE);
   EXPECT_EQ(telemetry.outcome(), PairingOutcome::NONE);
   EXPECT_EQ(telemetry.discovery_attempts(), 0u);
@@ -157,6 +161,70 @@ TEST(PairingTelemetry, EventOverflowTruncatesStorageButHeardKeepsCountingAll) {
   EXPECT_EQ(telemetry.event_count(), PAIRING_TELEMETRY_MAX_EVENTS) << "storage caps at the fixed array size";
   EXPECT_EQ(telemetry.heard_count(), static_cast<uint16_t>(kTotalEvents))
       << "heard_count keeps counting past the storage cap";
+}
+
+TEST(PairingTelemetry, ResultStringDoesNotTruncateWorstCaseFields) {
+  // Regression test for a buffer-size bug: the frozen `v1;` string was silently truncated by
+  // snprintf for realistic worst-case field widths, chopping the trailing advice= field. Builds
+  // the longest outcome/phase/type names, saturated counters, and all three advice codes, then
+  // asserts the string is complete (not truncated) and ends with the full advice value.
+  PairingTelemetry telemetry;
+  telemetry.begin();
+
+  const uint8_t src[NODE_ID_SIZE] = {0xAA, 0xBB, 0xCC};
+  // Saturate discovery_attempts_ and lbt_retries_ (both uint8_t; COUNTER_SATURATION_MAX = 0xFF).
+  for (int i = 0; i < 300; i++) {
+    telemetry.increment_discovery_attempt();
+    telemetry.record_lbt_defer(-40);
+  }
+  // Saturate heard_count_ (uint16_t) well past the fixed event-storage cap.
+  for (int i = 0; i < 70000; i++)
+    telemetry.record_rx(build_rx_frame(CMD_DISCOVER_RESP, src), -60);
+
+  telemetry.set_outcome(PairingOutcome::INVALID_RESPONSE);             // "invalid_response" — longest outcome name
+  telemetry.set_phase(pairing::PairingState::WAIT_DISCOVER_RESPONSE);  // "wait_discover_response" — longest phase name
+  const uint8_t node_id[NODE_ID_SIZE] = {0x30, 0xE1, 0xF2};
+  telemetry.set_paired_device(node_id, DeviceType::HEATING_TEMPERATURE_INTERFACE);  // longest type name
+  const std::string advice = "1w_traffic,channel_busy,foreign_controller";          // all three advice codes
+  telemetry.set_advice_codes(advice);
+
+  const std::string result = telemetry.result_sensor_string();
+
+  EXPECT_EQ(telemetry.discovery_attempts(), 0xFFu);
+  EXPECT_EQ(telemetry.lbt_retries(), 0xFFu);
+  EXPECT_EQ(telemetry.heard_count(), 65535u) << "heard_count_ (uint16_t) should saturate, not wrap";
+  ASSERT_GE(result.size(), advice.size() + 8) << "sanity: result string should contain the advice field";
+  EXPECT_EQ(result.substr(result.size() - advice.size()), advice)
+      << "the rendered string must not be truncated before the trailing advice= value: " << result;
+  EXPECT_NE(result.find("advice=" + advice), std::string::npos) << "full result: " << result;
+}
+
+TEST(PairingTelemetry, TruncatedIsReportedEvenWhenHeardCountDoesNotExceedEventCount) {
+  // Regression test: log_summary()'s "(truncated)" marker used to compare heard_count_ (RX/
+  // RX_REJECT only) against event_count_ (all kinds), which misses truncation whenever most
+  // dropped/stored events aren't RX/RX_REJECT — e.g. an attempt dominated by TX/PHASE events.
+  PairingTelemetry telemetry;
+  telemetry.begin();
+
+  // Fill exact capacity with non-"heard" TX events, then overflow with more TX events.
+  for (int i = 0; i < PAIRING_TELEMETRY_MAX_EVENTS + 4; i++)
+    telemetry.record_tx(CMD_DISCOVER_REQ);
+
+  EXPECT_EQ(telemetry.event_count(), PAIRING_TELEMETRY_MAX_EVENTS);
+  EXPECT_EQ(telemetry.heard_count(), 0u) << "TX events never count toward heard_count_";
+  ASSERT_LE(telemetry.heard_count(), telemetry.event_count())
+      << "sanity: the old buggy heuristic (heard_count_ > event_count_) would say 'not truncated' here";
+  EXPECT_TRUE(telemetry.truncated()) << "events were dropped past capacity; truncated() must say so "
+                                        "regardless of which kind of event was dropped";
+}
+
+TEST(PairingTelemetry, NotTruncatedWhenAllEventsFitInStorage) {
+  PairingTelemetry telemetry;
+  telemetry.begin();
+  telemetry.record_tx(CMD_DISCOVER_REQ);
+  telemetry.record_hop();
+
+  EXPECT_FALSE(telemetry.truncated());
 }
 
 TEST(PairingTelemetry, SetOutcomeAndPairedDeviceFeedResultString) {

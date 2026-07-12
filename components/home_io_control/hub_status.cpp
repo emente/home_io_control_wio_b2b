@@ -256,8 +256,8 @@ bool IOHomeControlComponent::apply_optimistic_linked_state_(const OneWayFrameInf
   return is_stop;
 }
 
-void IOHomeControlComponent::maybe_fire_remote_button_event_(const OneWayFrameInfo &info, bool linked,
-                                                             const std::string &src_id) {
+void IOHomeControlComponent::maybe_fire_sender_event_(const OneWayFrameInfo &info, bool linked,
+                                                      const std::string &src_id) {
   if (!info.has_intent)
     return;
   // All overheard 1W traffic is DEBUG-logged regardless (see log_1w_remote_frame()); the HA event
@@ -276,7 +276,7 @@ void IOHomeControlComponent::maybe_fire_remote_button_event_(const OneWayFrameIn
     return;
   }
   ESP_LOGD(detail::TAG, "Firing %s for sender %s", detail::ONEWAY_SENDER_EVENT, src_id.c_str());
-  this->fire_homeassistant_event(detail::ONEWAY_SENDER_EVENT, detail::build_remote_button_event_data(info, linked));
+  this->fire_homeassistant_event(detail::ONEWAY_SENDER_EVENT, detail::build_sender_event_data(info, linked));
 }
 
 void IOHomeControlComponent::update_device_status_(const IoFrame &frame) {
@@ -397,11 +397,11 @@ void IOHomeControlComponent::process_received_packet_(const RadioRxPacket &packe
     this->last_1w_logged_.timestamp = now;
 
     // Decode once and reuse for logging and (when it carries a command intent) the
-    // remote-button HA event, so a physical button press can drive automations directly.
+    // sender HA event, so a physical remote press (or sensor trigger) can drive automations directly.
     const OneWayFrameInfo info = decode_1w_frame(frame);
     const std::vector<std::string> *linked = this->registry_.linked_devices(src_id);
     detail::log_1w_remote_frame(info, linked);
-    this->maybe_fire_remote_button_event_(info, linked != nullptr && !linked->empty(), src_id);
+    this->maybe_fire_sender_event_(info, linked != nullptr && !linked->empty(), src_id);
     // Id-linked devices plus, for a typed broadcast, class-linked devices — deduplicated so a
     // device linked both ways is only touched once per press.
     const std::vector<std::string> target_devices = this->resolve_1w_target_devices_(info, src_id);

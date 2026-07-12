@@ -187,10 +187,9 @@ TEST(Redaction, FullPairingExchange_KeyTransferFrameNeverExposesSystemKey) {
 
   // Find the CMD_KEY_TRANSFER (0x32) frame among everything transmitted during pairing and
   // confirm its rendered frame-log text never exposes the plaintext system key.
-  constexpr size_t WIRE_CMD_OFFSET = 8;
   bool found_key_transfer = false;
   for (const auto &sent : radio.get_sent_data()) {
-    if (sent.size() <= WIRE_CMD_OFFSET || sent[WIRE_CMD_OFFSET] != CMD_KEY_TRANSFER)
+    if (sent.size() <= FRAME_CMD_OFFSET || sent[FRAME_CMD_OFFSET] != CMD_KEY_TRANSFER)
       continue;
     found_key_transfer = true;
 

@@ -20,12 +20,16 @@ namespace home_io_control {
 /// we probe up to 10 bits offset to recover the correct framing.
 static const uint8_t UART_PROBE_MAX_BIT_OFFSET = 10;
 
+namespace {
+
 /// Extract a single bit (MSB‑first) from a byte buffer.
 /// Used by UART decoding to scan raw radio samples.
 /// @param data Input byte buffer.
 /// @param bit_pos Global bit index within buffer.
 /// @return The bit value (0 or 1).
 uint8_t get_bit_msb(const uint8_t *data, uint16_t bit_pos) { return (data[bit_pos / 8] >> (7 - (bit_pos % 8))) & 0x01; }
+
+}  // namespace
 
 /// Decode a raw UART‑encoded bitstream into bytes.
 /// IO‑Homecontrol uses a UART‑like encoding over the air: each byte is represented
@@ -62,6 +66,8 @@ uint8_t decode_uart_probe(const uint8_t *raw, uint8_t raw_len, uint8_t bit_offse
 
   return decoded_len;
 }
+
+namespace {
 
 /// @brief Check if a command ID is one of the known IO‑Homecontrol commands.
 /// @param cmd Command byte.
@@ -113,6 +119,8 @@ bool is_plausible_uart_frame(const IoFrame &frame, uint8_t candidate_len) {
     return true;
   return (frame.ctrl0 & CTRL0_PROTOCOL_1W) != 0;
 }
+
+}  // namespace
 
 /// @brief Try to find a CRC-valid IO-Homecontrol frame within a decoded UART byte stream.
 /// @param decoded Decoded byte buffer from UART probe.

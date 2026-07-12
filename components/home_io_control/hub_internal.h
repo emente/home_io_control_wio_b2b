@@ -164,7 +164,7 @@ inline void log_frame_issue(IOHomeControlComponent *component, const char *direc
 /// Formats a concise DEBUG log line showing remote ID, target type, command intent, and
 /// priority. When the remote is linked to devices, appends the linked device IDs. Takes the
 /// already-decoded OneWayFrameInfo so callers that also build a HA event (see
-/// build_remote_button_event_data()) decode the frame once, not twice.
+/// build_sender_event_data()) decode the frame once, not twice.
 /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
 /// @param linked_devices Optional pointer to device IDs this remote is linked to.
 inline void log_1w_remote_frame(const OneWayFrameInfo &info, const std::vector<std::string> *linked_devices = nullptr) {
@@ -196,10 +196,11 @@ inline void log_1w_remote_frame(const OneWayFrameInfo &info, const std::vector<s
            command_name(info.cmd), info.cmd, info.data_len, suffix.c_str());
 }
 
-/// @brief Home Assistant event fired when an overheard 1W remote button press is decoded.
+/// @brief Home Assistant event fired when a decoded 1W frame carries a command intent from an
+/// exposed sender (a physical remote button press, or a wind/rain sensor's triggered command).
 inline constexpr const char *ONEWAY_SENDER_EVENT = "esphome.home_io_control_sender_event";
 
-/// @brief Whether a 1W sender is on the `exposed_senders` allowlist for the remote-button HA event.
+/// @brief Whether a 1W sender is on the `exposed_senders` allowlist for the sender HA event.
 ///
 /// "Sender" covers both remotes and wind/rain sensors — they use the identical 1W broadcast
 /// mechanism and differ only in the `originator` byte inside the payload, not in addressing.
@@ -225,14 +226,14 @@ inline std::string format_name_and_hex(const char *name, uint8_t value) {
   return std::string(buffer.data());
 }
 
-/// @brief Build the Home Assistant event data map for a decoded 1W remote button press.
+/// @brief Build the Home Assistant event data map for a decoded 1W sender frame.
 ///
 /// Only meaningful when `info.has_intent` is true (the caller gates emission on that); the
 /// `intent` field is only populated by decode_1w_frame() in that case.
 /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
-/// @param linked True if this remote is linked to at least one registered device.
+/// @param linked True if this sender is linked to at least one registered device.
 /// @return Event data map ready for fire_homeassistant_event().
-inline std::map<std::string, std::string> build_remote_button_event_data(const OneWayFrameInfo &info, bool linked) {
+inline std::map<std::string, std::string> build_sender_event_data(const OneWayFrameInfo &info, bool linked) {
   return {
       {"remote_id", node_id_to_string(info.src)},
       {"target_class", address_class_name(info.address_class)},

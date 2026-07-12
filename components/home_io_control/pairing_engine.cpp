@@ -26,32 +26,6 @@
 namespace esphome {
 namespace home_io_control {
 
-const char *pairing_stage_name(pairing::PairingState state) {
-  switch (state) {
-    case pairing::PairingState::IDLE:
-      return "idle";
-    case pairing::PairingState::TX_DISCOVER:
-      return "tx_discover";
-    case pairing::PairingState::WAIT_DISCOVER_RESPONSE:
-      return "wait_discover_response";
-    case pairing::PairingState::TX_KEY_INIT:
-      return "tx_key_init";
-    case pairing::PairingState::WAIT_KEY_CHALLENGE:
-      return "wait_key_challenge";
-    case pairing::PairingState::TX_KEY_TRANSFER:
-      return "tx_key_transfer";
-    case pairing::PairingState::WAIT_KEY_CONFIRM:
-      return "wait_key_confirm";
-    case pairing::PairingState::REGISTER_DEVICE:
-      return "register_device";
-    case pairing::PairingState::COMPLETE:
-      return "complete";
-    case pairing::PairingState::FAILED:
-    default:
-      return "failed";
-  }
-}
-
 namespace {
 
 const char *const TAG = "home_io_control";

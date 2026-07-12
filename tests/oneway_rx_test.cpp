@@ -1,5 +1,5 @@
 /// @file oneway_rx_test.cpp
-/// @brief Tests for the 1W remote-button Home Assistant event (hub_status.cpp, hub_internal.h).
+/// @brief Tests for the 1W sender Home Assistant event (hub_status.cpp, hub_internal.h).
 
 #include "hub_core.h"
 #include "hub_internal.h"
@@ -67,7 +67,7 @@ IoFrame make_1w_non_intent_frame() {
 }  // namespace
 
 // ============================================================================
-// build_remote_button_event_data() — pure mapping from decoded info to event data
+// build_sender_event_data() — pure mapping from decoded info to event data
 // ============================================================================
 
 TEST(OnewayRx, BuildEventData_MapsAllFieldsForCloseIntent) {
@@ -75,7 +75,7 @@ TEST(OnewayRx, BuildEventData_MapsAllFieldsForCloseIntent) {
   const OneWayFrameInfo info = decode_1w_frame(frame);
   ASSERT_TRUE(info.has_intent);
 
-  const auto data = detail::build_remote_button_event_data(info, /*linked=*/true);
+  const auto data = detail::build_sender_event_data(info, /*linked=*/true);
 
   EXPECT_EQ(data.at("remote_id"), node_id_to_string(REMOTE_ID));
   EXPECT_EQ(data.at("target_class"), std::string(address_class_name(AddressClass::BROADCAST_TYPE)));
@@ -91,7 +91,7 @@ TEST(OnewayRx, BuildEventData_LinkedFalse) {
   IoFrame frame = make_1w_execute(0x00, 0x00);  // main0=0 -> OPEN
   const OneWayFrameInfo info = decode_1w_frame(frame);
 
-  const auto data = detail::build_remote_button_event_data(info, /*linked=*/false);
+  const auto data = detail::build_sender_event_data(info, /*linked=*/false);
   EXPECT_EQ(data.at("intent"), "OPEN");
   EXPECT_EQ(data.at("linked"), "false");
 }
@@ -100,7 +100,7 @@ TEST(OnewayRx, BuildEventData_StopIntent) {
   IoFrame frame = make_1w_execute(POS_STOP, 0x00);
   const OneWayFrameInfo info = decode_1w_frame(frame);
 
-  const auto data = detail::build_remote_button_event_data(info, /*linked=*/false);
+  const auto data = detail::build_sender_event_data(info, /*linked=*/false);
   EXPECT_EQ(data.at("intent"), "STOP");
 }
 

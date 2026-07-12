@@ -19,7 +19,12 @@ namespace {
 const char *const TAG = "home_io_control.pairing";
 
 /// Buffer size for the frozen `v1;` result sensor string.
-constexpr size_t RESULT_SENSOR_STRING_BUFFER_SIZE = 160;
+/// Sized for the worst case, not the common case: outcome=invalid_response (17) +
+/// phase=wait_discover_response (25) + type=heating_temperature_interface (29) + all three
+/// advice codes ("1w_traffic,channel_busy,foreign_controller", 44) + saturated counters
+/// (attempts=255, lbt=255, dur_ms=4294967295, heard=65535) measures ~189 chars; 256 leaves
+/// headroom for future advice codes without silently truncating this frozen contract.
+constexpr size_t RESULT_SENSOR_STRING_BUFFER_SIZE = 256;
 
 /// Saturation ceiling for the uint8_t retry/attempt counters — a real pairing attempt never
 /// gets close to 255 of either, this just guards against wraparound.
@@ -69,6 +74,7 @@ const char *outcome_name(PairingOutcome outcome) {
 void PairingTelemetry::begin() {
   this->event_count_ = 0;
   this->heard_count_ = 0;
+  this->truncated_ = false;
   this->start_ms_ = millis();
   this->end_ms_ = this->start_ms_;
   this->ended_ = false;
@@ -88,8 +94,10 @@ void PairingTelemetry::record_(PairingTelemetryEventKind kind, uint8_t cmd, cons
     if (this->heard_count_ < UINT16_MAX)
       this->heard_count_++;
   }
-  if (this->event_count_ >= PAIRING_TELEMETRY_MAX_EVENTS)
+  if (this->event_count_ >= PAIRING_TELEMETRY_MAX_EVENTS) {
+    this->truncated_ = true;
     return;
+  }
   PairingTelemetryEvent &event = this->events_[this->event_count_++];
   event.millis_offset = millis() - this->start_ms_;
   event.kind = kind;
@@ -159,7 +167,7 @@ void PairingTelemetry::log_summary() const {
   ESP_LOGI(TAG, "Pairing attempt summary: outcome=%s phase=%s attempts=%u lbt=%u dur_ms=%u heard=%u events=%u%s",
            outcome_name(this->outcome_), pairing_stage_name(this->phase_), this->discovery_attempts_,
            this->lbt_retries_, this->duration_ms(), this->heard_count_, this->event_count_,
-           this->heard_count_ > this->event_count_ ? " (truncated)" : "");
+           this->truncated_ ? " (truncated)" : "");
   for (uint8_t i = 0; i < this->event_count_; i++) {
     const PairingTelemetryEvent &event = this->events_[i];
     if (event.kind == PairingTelemetryEventKind::RX || event.kind == PairingTelemetryEventKind::RX_REJECT) {

@@ -115,6 +115,12 @@ class PairingTelemetry {
   [[nodiscard]] uint8_t event_count() const { return this->event_count_; }
   /// @return Total RX events seen, including ones beyond the storage capacity.
   [[nodiscard]] uint16_t heard_count() const { return this->heard_count_; }
+  /// @return true if any event (of any kind — TX/RX/RX_REJECT/LBT_DEFER/HOP/PHASE) was dropped
+  /// because the fixed event array was full. Deliberately not derived from
+  /// `heard_count() > event_count()` — the two counters measure different populations
+  /// (`heard_count()` is RX/RX_REJECT only; `event_count()` is stored events of every kind), so
+  /// that comparison misses truncation whenever most stored events aren't RX/RX_REJECT.
+  [[nodiscard]] bool truncated() const { return this->truncated_; }
   /// @return Highest phase reached during the attempt.
   [[nodiscard]] pairing::PairingState phase() const { return this->phase_; }
   /// @return Final outcome, or PairingOutcome::NONE if no attempt has completed yet.
@@ -154,6 +160,7 @@ class PairingTelemetry {
   PairingTelemetryEvent events_[PAIRING_TELEMETRY_MAX_EVENTS]{};
   uint8_t event_count_{0};
   uint16_t heard_count_{0};
+  bool truncated_{false};
   uint32_t start_ms_{0};
   uint32_t end_ms_{0};
   bool ended_{false};

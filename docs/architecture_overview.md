@@ -5,8 +5,8 @@ This page gives a contributor-oriented map of the Home IO Control component and 
 ## Layer Map
 
 - \ref hioc_protocol "Protocol Layer": frame layout, command builders, cryptographic helpers, and shared protocol utilities. The protocol model is split into cohesive headers (`proto_sizes.h`, `proto_timing.h`, `proto_constants.h`, `proto_device_model.h`, `proto_codecs.h`, `proto_commands.h`, `proto_crypto.h`) with `proto_frame.h` holding the frame container and re-exporting the rest for transition.
-- \ref hioc_radio "Radio Driver Layer": the `RadioDriver` abstraction and the SX1276 / SX1262 implementations.
-- \ref hioc_hub "Controller Layer": `IOHomeControlComponent` orchestrates setup and loop scheduling through six collaborator objects — `ExchangeEngine` (authenticated exchanges), `PairingEngine` (discovery and pairing), `ManagementActions` (rename-device), `DeviceRegistry` (device table and callbacks), `OperationQueue` (pending-operation coalescing), and `StatusPollPolicy` (per-device poll scheduling). The hub itself is split by concern: `hub_core.cpp` (lifecycle and loop), `hub_operations.cpp` (queued operation dispatch), `hub_status.cpp` (passive receive-side handling), plus thin `hub_pairing.cpp` / `hub_management.cpp` wrappers around their engines. `hub_decisions.h` holds pure frame-classification helpers testable without radio or timing.
+- \ref hioc_radio "Radio Driver Layer": the `RadioDriver` abstraction and the SX1276 / SX1262 implementations. Chips without hardware IoHomeOn framing (SX1262 today, LR1121 planned) share the software PHY in `radio_soft_phy.h/.cpp` (UART bit-encoding for TX, UART-decode probe with CRC validation for RX).
+- \ref hioc_hub "Controller Layer": `IOHomeControlComponent` orchestrates setup and loop scheduling through seven collaborator objects — `ExchangeEngine` (authenticated exchanges), `PairingEngine` (discovery and pairing), `ManagementActions` (rename-device), `DeviceRegistry` (device table and callbacks), `OperationQueue` (pending-operation coalescing), `StatusPollPolicy` (per-device poll scheduling), and `PairingTelemetry` (per-attempt pairing event recorder, shared with both engines; its read-only companion `pairing_advisor.h` turns a completed attempt into actionable diagnostics). The hub itself is split by concern: `hub_core.cpp` (lifecycle and loop), `hub_operations.cpp` (queued operation dispatch), `hub_status.cpp` (passive receive-side handling), plus thin `hub_pairing.cpp` / `hub_management.cpp` wrappers around their engines. `hub_decisions.h` holds pure frame-classification helpers testable without radio or timing.
 - \ref hioc_tuning "Tuning Layer" (sub-group of the Controller Layer): the runtime `TuningConfig`, the table-driven `tuning_registry`, and the optional Home Assistant number/select entities.
 - \ref hioc_entities "ESPHome Integration Layer": the runtime entities plus the Python schema/codegen modules that expose the component to ESPHome. Shared device-binding codegen lives in `platform_common.py`; the C++ counterpart is the `DeviceBoundEntity` mixin in `platform_entity_base.h`.
 
@@ -22,7 +22,7 @@ These invariants keep the layers independent; changes should preserve them:
 ## Request Flow
 
 1. A YAML declaration is validated by the Python code-generation modules in \ref hioc_codegen "Python Code Generation".
-2. ESPHome codegen wires those declarations to runtime C++ objects such as `IOHomeControlComponent`, `IOHomeCover`, `IOHomeLight`, `IOHomeLock`, `IOHomeSwitch`, `IOHomeDiscoverButton`, and the generated `IOHomeDeviceNameTextSensor` companions.
+2. ESPHome codegen wires those declarations to runtime C++ objects such as `IOHomeControlComponent`, `IOHomeCover`, `IOHomeLight`, `IOHomeLock`, `IOHomeSwitch`, `IOHomeDiscoverButton`, and the generated companions (`IOHomeDeviceNameTextSensor` per entity, `IOHomePairingResultTextSensor` alongside the pairing button).
 3. Runtime entities call into the hub through the high-level operation methods documented in \ref hioc_hub "Controller Layer".
 4. The hub builds protocol frames using helpers from \ref hioc_protocol "Protocol Layer" and sends them through a concrete radio backend from \ref hioc_radio "Radio Driver Layer".
 5. Replies, passive updates, and authenticated inbound messages are parsed back through the same protocol layer and merged into the shared device registry before the entity callbacks publish state to Home Assistant.
@@ -75,6 +75,9 @@ Replace `hioc_heltec_v2` with the normalized `esphome.name` of the ESPHome node 
 - Pairing engine: [pairing_engine.h](../components/home_io_control/pairing_engine.h)
 - Exchange/auth state types: [hub_exchange.h](../components/home_io_control/hub_exchange.h)
 - Pairing state types: [hub_pairing.h](../components/home_io_control/hub_pairing.h)
+- Pairing telemetry recorder: [pairing_telemetry.h](../components/home_io_control/pairing_telemetry.h)
+- Pairing traffic advisor: [pairing_advisor.h](../components/home_io_control/pairing_advisor.h)
+- Key-material redaction helpers: [redaction.h](../components/home_io_control/redaction.h)
 - Pure frame-classification helpers: [hub_decisions.h](../components/home_io_control/hub_decisions.h)
 - Device registry: [device_registry.h](../components/home_io_control/device_registry.h)
 - Operation queue: [operation_queue.h](../components/home_io_control/operation_queue.h)
@@ -83,6 +86,7 @@ Replace `hioc_heltec_v2` with the normalized `esphome.name` of the ESPHome node 
 - Radio abstraction: [radio_interface.h](../components/home_io_control/radio_interface.h)
 - SX1276 driver: [radio_sx1276.h](../components/home_io_control/radio_sx1276.h)
 - SX1262 driver: [radio_sx1262.h](../components/home_io_control/radio_sx1262.h)
+- Shared software PHY (UART framing for chips without hardware IoHomeOn): [radio_soft_phy.h](../components/home_io_control/radio_soft_phy.h)
 - Protocol frame model: [proto_frame.h](../components/home_io_control/proto_frame.h)
 - Runtime tuning config: [tuning_config.h](../components/home_io_control/tuning_config.h)
 - Tuning parameter registry: [tuning_registry.h](../components/home_io_control/tuning_registry.h)

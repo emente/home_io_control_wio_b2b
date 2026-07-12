@@ -410,13 +410,13 @@ class IOHomeControlComponent : public Component,
   /// @param device_ids Devices to apply optimistic state to (see resolve_1w_target_devices_()).
   /// @return true if the intent resolved to a STOP (caller should poll immediately).
   bool apply_optimistic_linked_state_(const OneWayFrameInfo &info, const std::vector<std::string> &device_ids);
-  /// Fire the remote-button HA event for a decoded 1W frame, if the sender is exposed.
+  /// Fire the sender HA event for a decoded 1W frame, if the sender is exposed.
   /// DEBUG-logs the reason when it does not fire (API disconnected / sender not exposed) so a
   /// live log capture can distinguish "never reached this check" from "reached it and skipped".
   /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
   /// @param linked True if the sender is linked to at least one registered device.
   /// @param src_id Sender's node ID as a string (already computed by the caller).
-  void maybe_fire_remote_button_event_(const OneWayFrameInfo &info, bool linked, const std::string &src_id);
+  void maybe_fire_sender_event_(const OneWayFrameInfo &info, bool linked, const std::string &src_id);
   /// Shared request/response helper for high-level operations.
   /// @param device_id Target device ID.
   /// @param request Outbound request frame.
@@ -489,7 +489,7 @@ class IOHomeControlComponent : public Component,
   bool radio_test_mode_{false};  ///< When true, loop() is suspended for loopback testing.
   TuningConfig tuning_{};        ///< Runtime tuning overrides.
   DeviceRegistry registry_;
-  /// 1W sender node IDs (remotes or sensors) allowed to fire the remote-button HA event
+  /// 1W sender node IDs (remotes or sensors) allowed to fire the sender HA event
   /// (`add_exposed_sender`). Config-time list (populated once from YAML), not a per-frame allocation.
   std::vector<std::string> exposed_senders_;
   /// Invoked once after every pairing attempt completes; see set_pairing_result_callback().
