@@ -1,0 +1,52 @@
+#pragma once
+
+#include "corpus_generated.h"
+#include "proto_frame.h"
+
+#include <gtest/gtest.h>
+
+#include <functional>
+#include <string>
+#include <vector>
+
+/// Shared plumbing for the corpus_*_test.cpp suites (design §6): every suite parses capture
+/// frames the same way and filters/instantiates the same CorpusCapture pointer arrays. Kept
+/// here once so a new suite (e.g. Step H2's pairing replay) starts from a single include
+/// instead of a sixth copy-paste.
+namespace corpus_test {
+using namespace esphome::home_io_control;
+
+/// Length of a captured frame's wire bytes with any trailing CRC stripped.
+inline uint8_t wire_len(const corpus::CorpusFrame &cf) {
+  return cf.crc_present ? static_cast<uint8_t>(cf.len - 2) : cf.len;
+}
+
+/// Parse a captured frame's wire bytes (CRC-stripped) into an IoFrame.
+inline IoFrame parse_capture_frame(const corpus::CorpusFrame &cf) {
+  IoFrame frame{};
+  EXPECT_TRUE(parse(cf.bytes, wire_len(cf), frame)) << "failed to parse captured frame bytes";
+  return frame;
+}
+
+/// Corpus captures matching `pred`, e.g. captures_where([](auto *c) { return c->has_exchange; }).
+inline std::vector<const corpus::CorpusCapture *> captures_where(
+    const std::function<bool(const corpus::CorpusCapture *)> &pred) {
+  std::vector<const corpus::CorpusCapture *> result;
+  for (size_t i = 0; i < corpus::CAPTURE_COUNT; i++) {
+    if (pred(&corpus::CAPTURES[i]))
+      result.push_back(&corpus::CAPTURES[i]);
+  }
+  return result;
+}
+
+/// Every corpus capture, unfiltered.
+inline std::vector<const corpus::CorpusCapture *> all_captures() {
+  return captures_where([](const corpus::CorpusCapture *) { return true; });
+}
+
+/// gtest instantiation name generator: uses the capture's own `id` as the test name.
+inline std::string capture_name_generator(const ::testing::TestParamInfo<const corpus::CorpusCapture *> &info) {
+  return std::string(info.param->id);
+}
+
+}  // namespace corpus_test

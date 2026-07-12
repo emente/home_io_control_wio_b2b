@@ -10,22 +10,15 @@
 #include "corpus_generated.h"
 #include "proto_frame.h"
 
+#include "corpus_test_helpers.h"
+
 #include <gtest/gtest.h>
 
 #include <cstring>
-#include <string>
-#include <vector>
 
 using namespace esphome::home_io_control;
 
 namespace {
-
-std::vector<const corpus::CorpusCapture *> all_captures() {
-  std::vector<const corpus::CorpusCapture *> result;
-  for (size_t i = 0; i < corpus::CAPTURE_COUNT; i++)
-    result.push_back(&corpus::CAPTURES[i]);
-  return result;
-}
 
 // Bits with a known meaning today (proto_frame.h); anything else is a reserved/unknown bit.
 constexpr uint8_t CTRL1_KNOWN_MASK =
@@ -42,7 +35,7 @@ TEST_P(CorpusFrameRoundTrip, WireInvariantsHoldForEveryFrame) {
     const corpus::CorpusFrame &cf = capture->frames[i];
     SCOPED_TRACE(::testing::Message() << "capture=" << capture->id << " frame=" << static_cast<int>(i));
 
-    const uint8_t non_crc_len = cf.crc_present ? static_cast<uint8_t>(cf.len - 2) : cf.len;
+    const uint8_t non_crc_len = corpus_test::wire_len(cf);
 
     // 1. parse() must succeed on the CRC-stripped bytes.
     IoFrame parsed{};
@@ -84,7 +77,5 @@ TEST_P(CorpusFrameRoundTrip, WireInvariantsHoldForEveryFrame) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(CorpusFrame, CorpusFrameRoundTrip, ::testing::ValuesIn(all_captures()),
-                         [](const ::testing::TestParamInfo<const corpus::CorpusCapture *> &info) {
-                           return std::string(info.param->id);
-                         });
+INSTANTIATE_TEST_SUITE_P(CorpusFrame, CorpusFrameRoundTrip, ::testing::ValuesIn(corpus_test::all_captures()),
+                         corpus_test::capture_name_generator);
