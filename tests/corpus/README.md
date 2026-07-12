@@ -100,6 +100,21 @@ expect:                              # deliberately sparse — only assert what 
 - `expect` (optional): sparse, per-field-optional assertions. Nothing here is required; add
   only what a human has verified against real behavior — see "Expectations are
   human-verified" below.
+  - `frames[].classification` (optional): a symbolic name from one of the `decisions::`
+    disposition enums in `hub_decisions.h`, checked by `corpus_classification_test.cpp` against
+    the pure classifier ExchangeEngine/PairingEngine actually call. Allowed names: `REQUIRE_AUTH`,
+    `COMPLETE_DIRECT`, `IGNORE_UNRELATED`, `ACCEPT`, `NO_RESPONSE`, `INVALID`, `IGNORE`, and
+    `DISCOVERY_ACCEPT` (`PairingDiscoveryDisposition::ACCEPT` specifically — disambiguated from
+    the plain `ACCEPT` used by `ExchangeFinalResponseDisposition`/`PairingKeyChallengeDisposition`
+    because the three enums don't share the same underlying numeric value for "accept"; see
+    `scripts/corpus/build.py :: CLASSIFICATION_ENUM` for the full mapping). For `authenticated_command`
+    / `direct` / `status_poll` exchanges, the first `rx` frame is classified via
+    `classify_exchange_first_response()` and every `rx` frame after that via
+    `classify_exchange_final_response()`, both against the origin `tx` frame — the same shape
+    `ExchangeEngine::send_and_receive()` uses. For `pairing` captures, only a `CMD_DISCOVER_RESP`
+    (0x29) frame can carry a `classification` expectation today (`classify_pairing_discovery_response()`
+    needs only the frame itself); `classify_pairing_key_challenge()` additionally needs the
+    discovered device's and controller's node IDs, which the schema doesn't carry yet.
 
 ### Raw bytes are immutable
 

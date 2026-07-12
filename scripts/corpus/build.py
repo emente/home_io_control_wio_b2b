@@ -39,6 +39,25 @@ EXCHANGE_OUTCOME_ENUM = {
     "failure": "ExchangeOutcome::FAILURE",
 }
 
+# `classification` expectations name a value from one of the four decisions::*Disposition
+# enums in components/home_io_control/hub_decisions.h. Names are bare (not enum-qualified) to
+# match the design vocabulary (REQUIRE_AUTH, ACCEPT, IGNORE_UNRELATED, ...), except where two
+# enums give the same name a *different* numeric value: PairingDiscoveryDisposition::ACCEPT is
+# 2, while ExchangeFinalResponseDisposition::ACCEPT and PairingKeyChallengeDisposition::ACCEPT
+# are both 1 — that one case is disambiguated as DISCOVERY_ACCEPT. Every value here is pinned
+# against the real enum by a static_assert in tests/corpus_classification_test.cpp, so a reorder
+# of hub_decisions.h breaks the build instead of silently mis-scoring a capture.
+CLASSIFICATION_ENUM = {
+    "IGNORE_UNRELATED": 0,  # ExchangeFirstResponseDisposition / ExchangeFinalResponseDisposition
+    "COMPLETE_DIRECT": 1,  # ExchangeFirstResponseDisposition
+    "REQUIRE_AUTH": 2,  # ExchangeFirstResponseDisposition
+    "ACCEPT": 1,  # ExchangeFinalResponseDisposition / PairingKeyChallengeDisposition
+    "NO_RESPONSE": 0,  # PairingDiscoveryDisposition
+    "INVALID": 1,  # PairingDiscoveryDisposition
+    "DISCOVERY_ACCEPT": 2,  # PairingDiscoveryDisposition::ACCEPT (disambiguated, see above)
+    "IGNORE": 0,  # PairingKeyChallengeDisposition
+}
+
 
 def parse_hex(hex_str: str) -> bytes:
     return bytes.fromhex("".join(hex_str.split()))
@@ -85,15 +104,17 @@ def render_frame(capture_slug: str, index: int, frame: dict, expect_frame: dict)
     oneway = "true" if expect_frame.get("protocol") == "1w" else "false"
 
     # `classification` expectations map a symbolic decisions:: enum name (e.g. "REQUIRE_AUTH")
-    # to its numeric value — that mapping is wired up in a later tool version (corpus plan
-    # Step 4). Fail loudly rather than silently emit an invalid or meaningless C++ literal.
-    if "classification" in expect_frame:
-        raise SystemExit(
-            f"error: {capture_slug} frame[{index}]: 'classification' expectations are not supported yet "
-            "(arrives with corpus_classification_test.cpp); remove it from this capture for now."
-        )
-    has_classification = False
+    # to its numeric value via CLASSIFICATION_ENUM above.
+    has_classification = "classification" in expect_frame
     classification_expr = "0"
+    if has_classification:
+        name = expect_frame["classification"]
+        if name not in CLASSIFICATION_ENUM:
+            raise SystemExit(
+                f"error: {capture_slug} frame[{index}]: expect.frames[{index}].classification {name!r} is not "
+                f"one of {sorted(CLASSIFICATION_ENUM)}"
+            )
+        classification_expr = str(CLASSIFICATION_ENUM[name])
 
     has_hmac_valid = "hmac_valid" in expect_frame
     hmac_valid = "true" if expect_frame.get("hmac_valid", False) else "false"
@@ -259,6 +280,7 @@ def load_captures() -> list:
     paths = sorted(CAPTURES_DIR.rglob("*.yaml"))
     captures = []
     seen_ids = {}
+    seen_slugs = {}
     for path in paths:
         with path.open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle)
@@ -266,6 +288,17 @@ def load_captures() -> list:
         if capture_id in seen_ids:
             raise SystemExit(f"error: duplicate capture id '{capture_id}' in {path} (already in {seen_ids[capture_id]})")
         seen_ids[capture_id] = path
+        # Two distinct ids can slugify to the same C identifier (e.g. "a-b" and "a_b" both
+        # become "a_b") — that's a colliding array/variable name, not just a duplicate id.
+        slug = slug_for(capture_id)
+        if slug in seen_slugs:
+            other_id, other_path = seen_slugs[slug]
+            raise SystemExit(
+                f"error: capture id '{capture_id}' in {path} slugifies to '{slug}', colliding with "
+                f"'{other_id}' in {other_path} — ids must be distinct after non-alphanumeric characters "
+                "are replaced with '_'"
+            )
+        seen_slugs[slug] = (capture_id, path)
         captures.append(data)
     captures.sort(key=lambda c: c["id"])
     return captures

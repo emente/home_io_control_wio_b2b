@@ -1,0 +1,121 @@
+/// @file corpus_decode_test.cpp
+/// @brief Codec-layer expectations (design §6.3) driven by golden-frame corpus captures.
+///
+/// Every assertion here is optional per-capture: only fields present in a capture's `expect:`
+/// block are checked, so a keyless community capture that only verified a decoded intent still
+/// exercises exactly that and nothing more. Address classification (`classify_address()` /
+/// `broadcast_target_type()`) has no dedicated expectation field of its own — it is exercised
+/// transitively through `decode_1w_frame()`, which calls both internally to populate
+/// `OneWayFrameInfo::address_class` / `::target_type`.
+
+#include "corpus_generated.h"
+#include "proto_codecs.h"
+#include "proto_commands.h"
+#include "proto_constants.h"
+#include "proto_device_model.h"
+#include "proto_frame.h"
+
+#include "corpus_test_helpers.h"
+
+#include <gtest/gtest.h>
+
+#include <cstring>
+#include <string>
+
+using namespace esphome::home_io_control;
+
+namespace {
+
+// Mirrors PRIVATE_RESPONSE_TARGET_OFFSET / PRIVATE_RESPONSE_CURRENT_OFFSET /
+// STATUS_STOPPED_FLAGS_OFFSET in hub_status.cpp — those constants are file-local (anonymous
+// namespace), so the documented CMD_PRIVATE_RESP (0x04) byte layout is reproduced here rather
+// than extracted out of components/ (per AGENTS.md 0.5.1, this feature does not touch
+// components/). decode_position_report() itself IS a callable pure function
+// (proto_device_model.h) and is exercised for real, not reimplemented.
+constexpr uint8_t PRIVATE_RESP_STOPPED_FLAGS_OFFSET = 0;
+constexpr uint8_t PRIVATE_RESP_TARGET_OFFSET = 2;
+constexpr uint8_t PRIVATE_RESP_CURRENT_OFFSET = 4;
+
+}  // namespace
+
+class CorpusDecode : public ::testing::TestWithParam<const corpus::CorpusCapture *> {};
+
+TEST_P(CorpusDecode, ExpectationsMatchDecodedFrames) {
+  const corpus::CorpusCapture *capture = GetParam();
+  SCOPED_TRACE(::testing::Message() << "capture=" << capture->id);
+
+  // --- 1W remote frame decode --------------------------------------------------------------
+  const bool has_oneway_expectation = capture->has_oneway_intent || capture->has_oneway_target_type ||
+                                      capture->has_oneway_originator || capture->has_oneway_acei;
+  if (has_oneway_expectation) {
+    int oneway_frames_seen = 0;
+    for (uint8_t i = 0; i < capture->frame_count; i++) {
+      const corpus::CorpusFrame &cf = capture->frames[i];
+      if (!cf.has_flags || !cf.oneway)
+        continue;
+      oneway_frames_seen++;
+      IoFrame frame = corpus_test::parse_capture_frame(cf);
+      OneWayFrameInfo info = decode_1w_frame(frame);
+      if (capture->has_oneway_intent) {
+        EXPECT_STREQ(info.intent, capture->oneway_intent) << "1W intent mismatch on frame " << static_cast<int>(i);
+      }
+      if (capture->has_oneway_target_type) {
+        EXPECT_EQ(static_cast<uint16_t>(info.target_type), capture->oneway_target_type)
+            << "1W target_type mismatch on frame " << static_cast<int>(i);
+      }
+      if (capture->has_oneway_originator) {
+        EXPECT_EQ(info.originator, capture->oneway_originator)
+            << "1W originator mismatch on frame " << static_cast<int>(i);
+      }
+      if (capture->has_oneway_acei) {
+        EXPECT_EQ(info.acei_level, capture->oneway_acei) << "1W ACEI level mismatch on frame " << static_cast<int>(i);
+      }
+    }
+    EXPECT_GT(oneway_frames_seen, 0) << "capture has oneway expectations but no 1W-flagged frame was found";
+  }
+
+  // --- Device name decode --------------------------------------------------------------------
+  if (capture->has_device_name) {
+    int name_frames_seen = 0;
+    for (uint8_t i = 0; i < capture->frame_count; i++) {
+      const corpus::CorpusFrame &cf = capture->frames[i];
+      if (!cf.has_cmd || cf.cmd != CMD_GET_NAME_RESP)
+        continue;
+      name_frames_seen++;
+      IoFrame frame = corpus_test::parse_capture_frame(cf);
+      std::string decoded = decode_device_name_payload(frame.data, frame.data_len);
+      EXPECT_EQ(decoded, capture->device_name) << "device name mismatch on frame " << static_cast<int>(i);
+    }
+    EXPECT_GT(name_frames_seen, 0) << "capture has device.name expectation but no CMD_GET_NAME_RESP frame found";
+  }
+
+  // --- Status-response position decode --------------------------------------------------------
+  if (capture->has_reported_position) {
+    int status_frames_seen = 0;
+    for (uint8_t i = 0; i < capture->frame_count; i++) {
+      const corpus::CorpusFrame &cf = capture->frames[i];
+      if (!cf.has_cmd || cf.cmd != CMD_PRIVATE_RESP)
+        continue;
+      IoFrame frame = corpus_test::parse_capture_frame(cf);
+      if (frame.data_len <= PRIVATE_RESP_CURRENT_OFFSET + 1)
+        continue;  // too short to carry target/current — not a position-bearing 0x04 reply
+      status_frames_seen++;
+
+      const bool is_stopped = frame.data[PRIVATE_RESP_STOPPED_FLAGS_OFFSET] == STATUS_STOPPED;
+      const uint16_t target_raw = (static_cast<uint16_t>(frame.data[PRIVATE_RESP_TARGET_OFFSET]) << 8) |
+                                  frame.data[PRIVATE_RESP_TARGET_OFFSET + 1];
+      const uint16_t current_raw = (static_cast<uint16_t>(frame.data[PRIVATE_RESP_CURRENT_OFFSET]) << 8) |
+                                   frame.data[PRIVATE_RESP_CURRENT_OFFSET + 1];
+      float target = 0.0F;
+      float position = 0.0F;
+      decode_position_report(target_raw, current_raw, is_stopped, target, position);
+      EXPECT_FLOAT_EQ(position, static_cast<float>(capture->reported_position))
+          << "reported_position mismatch on frame " << static_cast<int>(i);
+    }
+    EXPECT_GT(status_frames_seen, 0)
+        << "capture has device.reported_position expectation but no position-bearing CMD_PRIVATE_RESP frame found";
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(CorpusDecode, CorpusDecode, ::testing::ValuesIn(corpus_test::all_captures()),
+                         corpus_test::capture_name_generator);

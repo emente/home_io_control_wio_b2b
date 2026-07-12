@@ -28,6 +28,8 @@ from pathlib import Path
 
 import yaml
 
+from build import CLASSIFICATION_ENUM
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CAPTURES_DIR = REPO_ROOT / "tests" / "corpus" / "captures"
 
@@ -51,6 +53,12 @@ ALLOWED_EXPECT_FRAME_KEYS = {"cmd", "start", "end", "protocol", "classification"
 ALLOWED_EXPECT_EXCHANGE_KEYS = {"kind", "outcome"}
 ALLOWED_EXPECT_DEVICE_KEYS = {"reported_position", "name"}
 ALLOWED_EXPECT_ONEWAY_KEYS = {"intent", "target_type", "originator", "acei"}
+
+# Names only — imported from build.py::CLASSIFICATION_ENUM rather than hand-mirrored, so a new
+# disposition name needs one coordinated edit (there, plus the static_assert in
+# corpus_classification_test.cpp) instead of two. validate.py only needs to reject typos before
+# they reach build.py's own hard-error; the numeric mapping stays in build.py.
+ALLOWED_CLASSIFICATIONS = set(CLASSIFICATION_ENUM)
 
 
 class ValidationError(Exception):
@@ -144,6 +152,12 @@ def validate_expect(expect: dict, frame_count: int, capture_id: str) -> None:
         for index, expect_frame in enumerate(expect_frames):
             require(isinstance(expect_frame, dict), f"{capture_id}: expect.frames[{index}] must be a mapping")
             require_known_keys(expect_frame, ALLOWED_EXPECT_FRAME_KEYS, f"{capture_id}: expect.frames[{index}]")
+            if "classification" in expect_frame:
+                require(
+                    expect_frame["classification"] in ALLOWED_CLASSIFICATIONS,
+                    f"{capture_id}: expect.frames[{index}].classification must be one of "
+                    f"{sorted(ALLOWED_CLASSIFICATIONS)}, got {expect_frame['classification']!r}",
+                )
 
     exchange = expect.get("exchange")
     if exchange is not None:

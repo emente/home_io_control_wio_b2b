@@ -40,8 +40,8 @@ expect:
     outcome: success
   frames:
     - {cmd: 0x00, start: true, end: false, protocol: 2w}
-    - {cmd: 0x3C}
+    - {cmd: 0x3C, classification: REQUIRE_AUTH}
     - {cmd: 0x3D, hmac_valid: true}
-    - {cmd: 0x04, start: false, end: true, protocol: 2w}
+    - {cmd: 0x04, start: false, end: true, protocol: 2w, classification: ACCEPT}
   device:
     reported_position: 50
