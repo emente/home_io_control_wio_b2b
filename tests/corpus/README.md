@@ -65,7 +65,7 @@ expect:                              # deliberately sparse — only assert what 
     - {cmd: 0x00, start: true, end: false, protocol: 2w}
     - {cmd: 0x3C, classification: REQUIRE_AUTH}
     - {cmd: 0x3D, hmac_valid: true}
-    - {cmd: 0x04, end: true}
+    - {cmd: 0x04, start: false, end: true, protocol: 2w}
   device:
     reported_position: 50
     name: "Terrace Awning"
@@ -80,9 +80,11 @@ expect:                              # deliberately sparse — only assert what 
 
 - `id` (string, required): globally unique. `validate.py`/`build.py` hard-fail on duplicates.
 - `description` (string, required): what the scenario is and why it's here.
-- `source.*`: provenance metadata. `origin` is required and one of `own-hardware`,
-  `github-issue`, `synthetic-bootstrap`. `issue` is required (may be `null`) so the field is
-  always present for `issue`-origin captures.
+- `source.*`: provenance metadata, enforced by `validate.py`. Required: `origin` (one of
+  `own-hardware`, `github-issue`, `synthetic-bootstrap`), `captured_with` (one of `heltec-v2`,
+  `heltec-v3`, `other`, `synthetic` — `build.py` reads this unconditionally to pick a chip-mock
+  in `corpus_exchange_replay_test.cpp`), `device`, `date`. Optional: `firmware`, `issue` (set to
+  `null` when there is no originating discussion, e.g. synthetic-bootstrap captures).
 - `key` (required): `corpus` or `unknown`. See "Key hygiene" below — this is a promise the file
   makes, and `validate.py` enforces it cryptographically: every `key: corpus` capture's 0x3C/0x3D
   HMACs and 0x31/0x3C/0x32 key-transfer payloads must verify under the public corpus key.
@@ -131,11 +133,13 @@ message explaining why (e.g. the code's prior behavior was itself the bug).
   corpus key (`tests/support/test_helpers.h::TEST_SYSTEM_KEY`) — never the real key.
 - **Pairing captures (containing a `0x32` key-transfer frame) leak the real system key** if
   committed as captured — the transfer key is public and hardcoded, so anyone with the raw
-  bytes can recover the real key. Pairing captures must be re-keyed before they are ever
-  committed, and raw pairing logs must never be pasted into a public GitHub issue.
+  bytes can recover the real key. Pairing captures should be re-keyed before they are ever
+  committed, and raw pairing logs should never be pasted into a public GitHub issue.
 - `key: unknown` community captures need no cryptographic anonymization — HMAC bytes without
-  the key are not attackable — but node IDs should still be remapped via `node_map` as a
-  privacy courtesy.
+  the key are not attackable. Node-ID remapping is not required for them: an issue-derived
+  capture's node IDs are already public in the linked GitHub thread, and keeping them as
+  captured makes the capture directly cross-referenceable against that thread (searchable,
+  diffable against a future re-capture of the same device).
 
 ### Expectations are human-verified
 
@@ -163,12 +167,52 @@ the two implementations fails a gate on both sides.
 
 ## Contribution workflow
 
-1. Capture frames (own hardware, or via `IOHOME_FRAME_LOG`/monitor configs — see
-   `docs/radio_diagnostics.md`).
-2. Scaffold a capture YAML per this schema (an `ingest.py` scaffolding tool arrives in a later
-   tool version; today, copy an existing capture as a template).
-3. Fill `expect:` only with fields you have verified against real decoded/classified output.
-4. Run `python3 scripts/corpus/validate.py` locally (or `make corpus-validate`, part of `make lint`)
-   to check the capture is internally self-consistent (CRC, CTRL0 length, schema).
-5. Commit the capture YAML. That's it — `make unit-test` regenerates the C++ fixture header
+1. Capture frames — own hardware, or a community-supplied log via `IOHOME_FRAME_LOG`/monitor
+   configs (see `docs/radio_diagnostics.md` and the README's
+   [Reporting Unsupported Devices](../../README.md#reporting-unsupported-devices) checklist).
+   ⚠️ Never paste a raw pairing log (`0x31`/`0x32`/`0x33`) publicly — see "Key hygiene" above.
+2. Scaffold a capture YAML with `scripts/corpus/ingest.py`, which parses both on-air log tags
+   (`io_capture` structured, legacy `io_frame`) plus a liberal fallback for mangled pastes, and
+   proposes mechanically-derivable `expect:` fields (cmd/start/end/protocol only):
+   ```bash
+   python3 scripts/corpus/ingest.py analysis/issues/27.txt \
+       --id issue_27_somfy_sunea_discovery --device "Somfy Sunea IO motor" \
+       --captured-with heltec-v3 --origin github-issue \
+       --issue https://github.com/laberning/home_io_control/issues/27 --date 2026-07-06 \
+       -o tests/corpus/captures/issues/issue_27_somfy_sunea_discovery.yaml
+   ```
+   Pipe a trimmed excerpt through stdin (`sed -n '10,40p' file.txt | ingest.py - ...`) instead of
+   ingesting a whole log when you only want one scenario out of it. Every capture `ingest.py`
+   emits is `key: unknown` unless you pass `--rekey`.
+3. **Own-hardware captures with a real system key**: re-key at ingest time instead of committing
+   real crypto. `--rekey` verifies every captured HMAC / key-transfer payload against your real
+   key (hard abort on any mismatch — never silently produces bad output), rewrites them under
+   the public corpus key, and marks `key: corpus`:
+   ```bash
+   python3 scripts/corpus/ingest.py my_capture.log --rekey \
+       --system-key-from config/secrets.yaml \
+       --remap C0FFEE=AAAA01 --role AAAA01=controller \
+       --remap 96D267=BBBB01 --role BBBB01=awning \
+       --id somfy_awning_exchange_open --device "..." --captured-with heltec-v3 \
+       --origin own-hardware --date 2026-07-06 \
+       -o tests/corpus/captures/somfy_awning/exchange_open.yaml
+   ```
+   `--system-key-from` refuses to read a path that is not git-ignored. Run this only locally,
+   never in CI, and never on a community-supplied log you don't have the real key for.
+4. Fill/correct `expect:` only with fields you have verified — `ingest.py`'s proposals are
+   marked `# PROPOSED — verify before commit` and must be confirmed against real decoded output
+   (own hardware) or the issue thread's established facts (community logs), not rubber-stamped.
+5. Run `python3 scripts/corpus/validate.py` locally (or `make corpus-validate`, part of `make lint`)
+   to check the capture is internally self-consistent (CRC, CTRL0 length, schema) and that its
+   crypto promises hold (`key: corpus` HMACs verify; any `0x32` frame, in any capture, decrypts
+   to the corpus key — see "Crypto enforcement" above).
+6. Commit the capture YAML. That's it — `make unit-test` regenerates the C++ fixture header
    from it automatically; there is no generated file to commit alongside it.
+
+### Growth convention
+
+A device-specific protocol bug is not considered fixed until its capture is in the corpus: the
+fixing PR should add the capture (and a decode/classification assertion that would have caught
+the bug) in the same change. Issue-derived captures live under `captures/issues/`, named
+`issue_<n>_<slug>.yaml`, with `source.issue` pointing at the originating discussion — so every
+fixture stays traceable to the report that motivated it.

@@ -231,6 +231,12 @@ make test
 
 # Full QA: lint + tests
 make check
+
+# Validate the golden-frame corpus (schema, CRC, crypto — see tests/corpus/README.md)
+make corpus-validate
+
+# Regenerate the corpus's generated C++ fixture header (also runs automatically before unit-test)
+make corpus-gen
 ```
 
 ### Firmware Build & Flash
@@ -295,6 +301,16 @@ logger:
 
 2. Trigger the action that shows the problem.
    For new devices, put the device into pairing mode, press the Discover & Pair button, and capture the log from the button press until the pairing flow finishes.
+
+   **⚠️ Do NOT post pairing logs publicly.** A raw pairing log contains your system key encrypted
+   only under a key that is hardcoded and identical on every IO-Homecontrol installation
+   worldwide — anyone with the raw bytes can recover your real key and control your paired
+   devices. Command/status logs (opening, closing, polling status) are safe to share; a log that
+   contains commands `0x31`/`0x32`/`0x33` (key init / key transfer / key confirm) is a pairing
+   log and should never be pasted into a public issue. If you want to help turn your log into a
+   permanent regression fixture instead of a one-off report, see
+   [`tests/corpus/README.md`](tests/corpus/README.md) — command/status logs can be contributed
+   directly; pairing logs should be re-keyed first (that tooling is there too).
 3. Include the board model, radio chip, and full pin mapping you used.
 4. Include the device model or product name if you know it, and mention whether it was previously paired with another hub.
 5. Include any raw values reported by the logs, especially `io_device_id`, `io_device_type`, and `io_subtype`, even if they appear as numeric values such as `0x11`.

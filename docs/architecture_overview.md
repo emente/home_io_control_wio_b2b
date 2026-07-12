@@ -94,6 +94,22 @@ Replace `hioc_heltec_v2` with the normalized `esphome.name` of the ESPHome node 
 - ESPHome hub schema: [__init__.py](../components/home_io_control/__init__.py)
 - Shared platform codegen: [platform_common.py](../components/home_io_control/platform_common.py)
 
+## Test Corpus
+
+A versioned corpus of real captured IO-Homecontrol frames lives at `tests/corpus/captures/`,
+one YAML file per scenario, format spec and contribution workflow in
+[`tests/corpus/README.md`](../tests/corpus/README.md). `scripts/corpus/build.py` renders the
+YAML captures into a git-ignored C++ fixture header (`build/corpus/corpus_generated.h`) before
+every host test build — the YAML is the single source of truth, so there is no generated file
+to keep in sync or commit. `scripts/corpus/ingest.py` scaffolds new captures from pasted on-air
+logs (and re-keys own-hardware captures with `--rekey` so no real system key is ever committed);
+`scripts/corpus/validate.py` (`make corpus-validate`, part of `make lint`) enforces schema,
+CRC/CTRL0 self-consistency, and cryptographic promises. Five host test suites replay the corpus
+through the real protocol/crypto/codec/decision/exchange code
+(`tests/corpus_frame_test.cpp`, `corpus_crypto_test.cpp`, `corpus_decode_test.cpp`,
+`corpus_classification_test.cpp`, `corpus_exchange_replay_test.cpp`) — an issue-derived capture
+becomes a permanent parser/decoder regression fixture the day it's ingested.
+
 ## Navigation Notes
 
 - The generated Doxygen UI places groups under **Topics**. In this project, those topics represent the architecture layers above.
