@@ -2,7 +2,8 @@
 """Schema and self-consistency validation for the golden-frame corpus.
 
 Checks every capture YAML under tests/corpus/captures/**/*.yaml:
-  * required fields present, `key` and `source.origin` hold allowed values;
+  * required fields present, `key`, `source.origin`, and `source.captured_with` hold allowed
+    values;
   * `hex` is well-formed (even count of hex digits, whitespace-tolerant);
   * frame byte count is >= FRAME_MIN_SIZE (+2 when `crc: present`);
   * CTRL0 length bits (bits [4:0] = frame_length - 1, CRC bytes not counted) agree with the
@@ -42,6 +43,11 @@ CAPTURES_DIR = REPO_ROOT / "tests" / "corpus" / "captures"
 
 ALLOWED_KEY_MODES = {"corpus", "unknown"}
 ALLOWED_ORIGINS = {"own-hardware", "github-issue", "synthetic-bootstrap"}
+# Mirrors ingest.py's --captured-with choices — build.py hard-requires source.captured_with
+# (render_capture() reads capture["source"]["captured_with"] unconditionally) but validate.py
+# didn't check it was present, so a hand-edited or older capture missing it passed validation
+# and then died in build.py with a raw KeyError traceback instead of a readable message.
+ALLOWED_CAPTURED_WITH = {"heltec-v2", "heltec-v3", "other", "synthetic"}
 ALLOWED_DIRS = {"tx", "rx"}
 ALLOWED_CRC = {"present", "absent"}
 
@@ -237,10 +243,16 @@ def validate_capture(data: dict, path: Path) -> str:
 
     source = data["source"]
     require(isinstance(source, dict), f"{capture_id}: 'source' must be a mapping")
-    require("origin" in source, f"{capture_id}: source.origin is required")
+    for field in ("origin", "captured_with", "device", "date"):
+        require(field in source, f"{capture_id}: source.{field} is required")
     require(
         source["origin"] in ALLOWED_ORIGINS,
         f"{capture_id}: source.origin must be one of {sorted(ALLOWED_ORIGINS)}, got {source['origin']!r}",
+    )
+    require(
+        source["captured_with"] in ALLOWED_CAPTURED_WITH,
+        f"{capture_id}: source.captured_with must be one of {sorted(ALLOWED_CAPTURED_WITH)}, "
+        f"got {source['captured_with']!r}",
     )
 
     frames = data["frames"]

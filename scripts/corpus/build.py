@@ -188,9 +188,10 @@ def render_capture(capture: dict) -> "tuple[str, str]":
 
     key_expr = KEY_MODE_ENUM[capture["key"]]
     origin_expr = c_string(capture["source"]["origin"])
+    captured_with_expr = c_string(capture["source"]["captured_with"])
 
     capture_init = (
-        f"  {{{c_string(capture_id)}, {origin_expr}, {key_expr}, "
+        f"  {{{c_string(capture_id)}, {origin_expr}, {captured_with_expr}, {key_expr}, "
         f"{has_exchange}, {kind_expr}, {outcome_expr}, "
         f"{frames_array_name}, {len(frames)}u, "
         f"{'true' if has_reported_position else 'false'}, {reported_position}u, "
@@ -246,6 +247,7 @@ struct CorpusFrame {{
 struct CorpusCapture {{
   const char *id;
   const char *source_origin;  ///< "own-hardware" | "github-issue" | "synthetic-bootstrap".
+  const char *captured_with;  ///< "heltec-v2" | "heltec-v3" | "other" | "synthetic".
   KeyMode key;
   bool has_exchange;
   ExchangeKind kind;
