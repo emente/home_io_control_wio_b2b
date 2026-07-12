@@ -69,9 +69,14 @@ TEST_P(CorpusClassification, FramesClassifyInRecordedOrder) {
     case corpus::ExchangeKind::AUTHENTICATED_COMMAND:
     case corpus::ExchangeKind::DIRECT:
     case corpus::ExchangeKind::STATUS_POLL: {
-      // Same shape ExchangeEngine::send_and_receive() drives: one origin request, then rx
-      // frames classified in order — the first via classify_exchange_first_response(), every
-      // rx frame after that via classify_exchange_final_response() (exchange_engine.cpp).
+      // Mirrors the state machine ExchangeEngine::send_and_receive() actually drives, not just
+      // encounter order: wait_for_first_response_() classifies *every* inbound frame via
+      // classify_exchange_first_response() and keeps looping past IGNORE_UNRELATED ones — a
+      // capture can legitimately contain unrelated overheard traffic (another device's frames)
+      // interleaved before or during a real exchange, and those must still classify
+      // IGNORE_UNRELATED rather than being mistaken for the challenge/final response by simple
+      // position. Once a non-ignored disposition arrives (REQUIRE_AUTH), wait_for_final_response_()
+      // takes over the same way with classify_exchange_final_response(), until ACCEPT.
       const corpus::CorpusFrame *origin_cf = nullptr;
       for (uint8_t i = 0; i < capture->frame_count; i++) {
         if (capture->frames[i].tx) {
@@ -82,18 +87,38 @@ TEST_P(CorpusClassification, FramesClassifyInRecordedOrder) {
       ASSERT_NE(origin_cf, nullptr) << "exchange-shaped capture must have an origin tx frame";
       IoFrame origin = corpus_test::parse_capture_frame(*origin_cf);
 
-      bool seen_first_rx = false;
+      enum class Stage { SEEKING_FIRST, SEEKING_FINAL, DONE } stage = Stage::SEEKING_FIRST;
       for (uint8_t i = 0; i < capture->frame_count; i++) {
         const corpus::CorpusFrame &cf = capture->frames[i];
         if (cf.tx)
           continue;
         IoFrame candidate = corpus_test::parse_capture_frame(cf);
-        const uint8_t actual =
-            !seen_first_rx ? static_cast<uint8_t>(decisions::classify_exchange_first_response(origin, candidate))
-                           : static_cast<uint8_t>(decisions::classify_exchange_final_response(origin, candidate));
-        seen_first_rx = true;
-        if (cf.has_classification) {
-          EXPECT_EQ(actual, cf.classification) << "classification mismatch on frame " << static_cast<int>(i);
+
+        if (stage == Stage::SEEKING_FIRST) {
+          auto disp = decisions::classify_exchange_first_response(origin, candidate);
+          if (cf.has_classification) {
+            EXPECT_EQ(static_cast<uint8_t>(disp), cf.classification)
+                << "classification mismatch on frame " << static_cast<int>(i);
+          }
+          if (disp == decisions::ExchangeFirstResponseDisposition::REQUIRE_AUTH) {
+            stage = Stage::SEEKING_FINAL;
+          } else if (disp == decisions::ExchangeFirstResponseDisposition::COMPLETE_DIRECT) {
+            stage = Stage::DONE;
+          }
+          // IGNORE_UNRELATED: stay in SEEKING_FIRST, exactly like the production wait loop.
+        } else if (stage == Stage::SEEKING_FINAL) {
+          auto disp = decisions::classify_exchange_final_response(origin, candidate);
+          if (cf.has_classification) {
+            EXPECT_EQ(static_cast<uint8_t>(disp), cf.classification)
+                << "classification mismatch on frame " << static_cast<int>(i);
+          }
+          if (disp == decisions::ExchangeFinalResponseDisposition::ACCEPT) {
+            stage = Stage::DONE;
+          }
+        } else {
+          ASSERT_FALSE(cf.has_classification) << "frame " << static_cast<int>(i)
+                                              << " has a classification expectation but the exchange already "
+                                                 "completed (DONE) — no classifier applies to frames after that";
         }
       }
       break;

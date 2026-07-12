@@ -1,0 +1,32 @@
+id: issue_27_smoov_1w_sx1276_monitor
+description: >
+  1W traffic from a Smoov IO remote, captured cleanly on SX1276 passive-monitor hardware.
+  Verifies 1W frame parsing for an undecoded command byte and a WRITE_PRIVATE pairing-mode
+  beacon.
+source:
+  device: "Smoov IO remote"
+  captured_with: heltec-v2
+  firmware: null
+  date: 2026-07-06
+  origin: github-issue
+  issue: "https://github.com/laberning/home_io_control/issues/27"
+key: unknown
+frames:
+  - dir: rx
+    t_ms: 0
+    freq: 868950000
+    hex: "FC 00 00 00 3F 2F 9A 98 30 4F F4 52 A5 1F E8 BF 3A B9 B4 DC CA F9 2F 9A 98 02 01 17 41"
+    crc: absent
+    note: "cmd=0x30 (undecoded); device's own log: 'targets all: UNKNOWN_CMD(0x30) data_len=20'"
+  - dir: rx
+    t_ms: 1424
+    freq: 868950000
+    hex: "F5 00 00 00 3F 2F 9A 98 20 02 03 0C 00 00 17 46 B1 1F B0 BE 07 30"
+    crc: absent
+    note: "cmd=0x20 WRITE_PRIVATE pairing-mode beacon"
+expect:
+  frames:
+    - {cmd: 0x30, start: true, end: true, protocol: 1w}
+    - {cmd: 0x20, start: true, end: true, protocol: 1w}
+  oneway:
+    target_type: 0

@@ -101,7 +101,9 @@ TEST_P(CorpusDecode, ExpectationsMatchDecodedFrames) {
         continue;  // too short to carry target/current — not a position-bearing 0x04 reply
       status_frames_seen++;
 
-      const bool is_stopped = frame.data[PRIVATE_RESP_STOPPED_FLAGS_OFFSET] == STATUS_STOPPED;
+      // Bitwise, not equality — mirrors hub_status.cpp :: apply_private_response_status()
+      // (`(frame.data[0] & STATUS_STOPPED) != 0`); STATUS_STOPPED is one flag bit among others.
+      const bool is_stopped = (frame.data[PRIVATE_RESP_STOPPED_FLAGS_OFFSET] & STATUS_STOPPED) != 0;
       const uint16_t target_raw = (static_cast<uint16_t>(frame.data[PRIVATE_RESP_TARGET_OFFSET]) << 8) |
                                   frame.data[PRIVATE_RESP_TARGET_OFFSET + 1];
       const uint16_t current_raw = (static_cast<uint16_t>(frame.data[PRIVATE_RESP_CURRENT_OFFSET]) << 8) |
