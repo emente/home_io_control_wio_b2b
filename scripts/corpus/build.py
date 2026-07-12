@@ -19,6 +19,8 @@ from pathlib import Path
 
 import yaml
 
+from protolib import parse_hex
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CAPTURES_DIR = REPO_ROOT / "tests" / "corpus" / "captures"
 OUTPUT_PATH = REPO_ROOT / "build" / "corpus" / "corpus_generated.h"
@@ -57,10 +59,6 @@ CLASSIFICATION_ENUM = {
     "DISCOVERY_ACCEPT": 2,  # PairingDiscoveryDisposition::ACCEPT (disambiguated, see above)
     "IGNORE": 0,  # PairingKeyChallengeDisposition
 }
-
-
-def parse_hex(hex_str: str) -> bytes:
-    return bytes.fromhex("".join(hex_str.split()))
 
 
 def c_string(value: str) -> str:

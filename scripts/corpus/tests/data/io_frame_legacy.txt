@@ -1,0 +1,10 @@
+Trimmed excerpt of a real capture, analysis/issues/23.txt (SX1276 / Heltec V2). Exercises three
+things at once: (1) the legacy `io_frame` tag's older shape with no `cmd=`/flags field at all
+(observed on this firmware build — log_frame.h's current shape always includes it, but real
+issue pastes carry older builds too); (2) an `io_capture`/`io_frame` pair describing the exact
+same physical TX frame, back-to-back, which parse_log() must merge into one frame instead of two;
+(3) a standalone `io_frame` RX line with no `io_capture` counterpart at all.
+
+[11:54:26.209][D][io_capture:190]: chip=sx1276 phase=component stage=tx_frame freq=868950000 ts=22229 len=17 cmd=0x00 src=31BAF7 dst=7F5958 payload=50 20 7F 59 58 31 BA F7 00 01 E7 D4 00 20 32 00 00
+[11:54:26.213][I][io_frame:031]: TX [17 bytes] freq=868950000 preamble=1024: 50 20 7F 59 58 31 BA F7 00 01 E7 D4 00 20 32 00 00
+[11:54:26.497][I][io_frame:033]: RX [15 bytes] freq=868950000: 0E 00 31 BA F7 7F 59 58 3C EE 4B 9D FE 53 07

@@ -1,0 +1,7 @@
+Synthetic mangled excerpt — issue pastes sometimes lose their log tags/brackets to copy-paste
+reformatting (forum markdown collapsing whitespace, a screenshot transcribed by hand, etc.),
+leaving only a run of hex byte pairs with no recognizable io_capture/io_frame prefix. This
+exercises the liberal fallback tier, which must still recover the byte run and mark it
+UNVERIFIED-EXTRACTION for human review rather than silently dropping it.
+
+not sure what this means but here's what showed up when I copied it: 50 20 7F 59 58 31 BA F7 00 01 E7 D4 00 20 32 00 00 -- does that help?

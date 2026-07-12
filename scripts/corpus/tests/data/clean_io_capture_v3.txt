@@ -1,0 +1,7 @@
+Trimmed excerpt of a real capture, analysis/issues/3.txt (SX1262 / Heltec V3, passive RX only).
+Pure structured `io_capture` tag, no legacy `io_frame` duplicates in this excerpt.
+
+[12:11:10.566][D][io_capture:062]: chip=sx1262 phase=component stage=parse_ok freq=868250000 ts=17488985 len=23 cmd=0x04 src=E67334 dst=269411 payload=96 00 26 94 11 E6 73 34 04 05 00 00 00 C8 00 00 19 E6 73 34 00 00 00
+[12:11:10.570][D][home_io_control:087]: rx issue=unregistered_device cmd=0x04 src=E67334 dst=269411 len=23 data_len=14
+[12:11:11.575][D][io_capture:062]: chip=sx1262 phase=component stage=parse_ok freq=869850000 ts=17489994 len=18 cmd=0x00 src=050002 dst=A19844 payload=11 B3 A1 98 44 05 00 02 00 C8 00 00 00 B3 A1 98 10 00
+[12:11:11.579][D][home_io_control:087]: rx issue=unhandled_cmd cmd=0x00 src=050002 dst=A19844 len=18 data_len=9

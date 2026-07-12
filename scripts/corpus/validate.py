@@ -28,16 +28,13 @@ from pathlib import Path
 
 import yaml
 
-from build import CLASSIFICATION_ENUM
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build import CLASSIFICATION_ENUM  # noqa: E402
+from protolib import CTRL0_LENGTH_MASK, FRAME_MAX_SIZE, FRAME_MIN_SIZE, crc_ccitt  # noqa: E402
+from protolib import parse_hex as protolib_parse_hex  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CAPTURES_DIR = REPO_ROOT / "tests" / "corpus" / "captures"
-
-# --- Mirrors of components/home_io_control/proto_sizes.h / proto_frame.cpp -----------------
-FRAME_MIN_SIZE = 9  # CTRL0 + CTRL1 + DST(3) + SRC(3) + CMD(1)
-FRAME_MAX_SIZE = 32  # 9 header + 23 data
-CTRL0_LENGTH_MASK = 0x1F
-CRC_POLYNOMIAL_REVERSED = 0x8408
 
 ALLOWED_KEY_MODES = {"corpus", "unknown"}
 ALLOWED_ORIGINS = {"own-hardware", "github-issue", "synthetic-bootstrap"}
@@ -65,22 +62,13 @@ class ValidationError(Exception):
     """A single capture failed validation; carries a human-readable message."""
 
 
-def crc_ccitt(data: bytes) -> int:
-    """Port of crc_ccitt() in proto_frame.cpp: poly 0x8408 (reversed), init 0x0000."""
-    crc = 0x0000
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            crc = (crc >> 1) ^ CRC_POLYNOMIAL_REVERSED if (crc & 0x0001) else (crc >> 1)
-    return crc & 0xFFFF
-
-
 def parse_hex(hex_str: str, context: str) -> bytes:
+    """Thin, error-context-carrying adapter over protolib.parse_hex (the canonical implementation)."""
     compact = "".join(hex_str.split())
     if len(compact) % 2 != 0:
         raise ValidationError(f"{context}: hex string has an odd number of digits: {hex_str!r}")
     try:
-        return bytes.fromhex(compact)
+        return protolib_parse_hex(hex_str)
     except ValueError as exc:
         raise ValidationError(f"{context}: hex string is not valid hex: {hex_str!r} ({exc})") from exc
 

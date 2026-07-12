@@ -68,10 +68,12 @@ yamllint:
 	yamllint config/tests/ config/*.yaml tests/corpus/captures/ 2>/dev/null || exit 1
 
 # Golden-frame corpus: schema + self-consistency validation of every capture YAML
-# (CRC, CTRL0 length, duplicate ids). The generated C++ headers are used for unit-tests
+# (CRC, CTRL0 length, duplicate ids), plus the ingest/build/validate tool self-tests.
+# The generated C++ headers are used for unit-tests
 corpus-validate:
 	@echo "Validating golden-frame corpus captures..."
 	@python3 scripts/corpus/validate.py
+	@python3 scripts/corpus/tests/run_tests.py
 
 # Static analysis (local clang-tidy after building inside Docker)
 clang-tidy:
