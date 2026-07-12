@@ -17,8 +17,13 @@ const uint8_t FOREIGN_ID[3] = {0x77, 0x88, 0x99};
 
 // Crypto test values (6-byte challenge, 16-byte system key)
 const uint8_t TEST_CHALLENGE[6] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-const uint8_t TEST_SYSTEM_KEY[16] = {0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
-                                     0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10};
+// "corpus key" — the one well-known key shared by the entire test suite and the
+// golden-frame corpus (tests/corpus/README.md); re-keyed own-hardware captures are rewritten
+// to verify under this value so no real system key is ever committed. Community-supplied
+// captures are never re-keyed — they carry `key: unknown` and are never HMAC-verified against
+// this value; only the maintainer's own hardware qualifies for `--rekey`.
+const uint8_t TEST_SYSTEM_KEY[16] = {0xDE, 0xCA, 0xFC, 0x0F, 0xFE, 0xE0, 0xFF, 0x1C,
+                                     0xEB, 0xAD, 0xBE, 0xEF, 0xF0, 0x0D, 0xBA, 0x11};
 
 // Build a standard execute command frame (start frame, not end) for the given position.
 inline IoFrame make_execute(uint8_t position) {
