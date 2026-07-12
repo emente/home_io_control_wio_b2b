@@ -136,3 +136,29 @@ TEST(CorpusCryptoKeyTransfer, KeyTransferDecryptsToCorpusKey) {
 
 INSTANTIATE_TEST_SUITE_P(CorpusCrypto, CorpusCryptoReplay, ::testing::ValuesIn(authenticated_corpus_captures()),
                          corpus_test::capture_name_generator);
+
+/// Cross-language known-answer vectors, hardcoded here and in
+/// scripts/corpus/tests/data/crypto_kat.yaml — both generated from this same C++
+/// implementation via tests/corpus_bootstrap_dump_test.cpp :: DISABLED_PrintCryptoKatVectors.
+/// The Python port (scripts/corpus/protolib.py, used by ingest.py --rekey and validate.py's
+/// key:corpus enforcement) is asserted against the identical vectors in
+/// scripts/corpus/tests/run_tests.py. A divergence between the two implementations fails a gate
+/// on both sides; regenerate both files together if this ever needs to change.
+TEST(CorpusCryptoKat, CppVectorsMatchPythonPort) {
+  const uint8_t kat1_data[1] = {0x00};
+  const uint8_t kat1_hmac[HMAC_SIZE] = {0x13, 0x68, 0x06, 0x37, 0xCD, 0xF3};
+  const uint8_t kat2_data[8] = {0x00, 0x01, 0x43, 0x64, 0x00, 0x80, 0xD8, 0x06};
+  const uint8_t kat2_hmac[HMAC_SIZE] = {0x25, 0xF8, 0xE7, 0x5F, 0xA2, 0x1E};
+  const uint8_t kat3_data[14] = {0x20, 0x02, 0x03, 0x05, 0x04, 0x00, 0x08, 0xAF, 0xC0, 0xB8, 0x12, 0x1F, 0x73, 0xA2};
+  const uint8_t kat3_hmac[HMAC_SIZE] = {0x83, 0xC3, 0xC2, 0x0D, 0xFF, 0xF8};
+
+  uint8_t hmac[HMAC_SIZE] = {0};
+  ASSERT_TRUE(crypto::create_hmac(kat1_data, sizeof(kat1_data), test::TEST_CHALLENGE, test::TEST_SYSTEM_KEY, hmac));
+  EXPECT_EQ(std::memcmp(hmac, kat1_hmac, HMAC_SIZE), 0) << "kat1 mismatch";
+
+  ASSERT_TRUE(crypto::create_hmac(kat2_data, sizeof(kat2_data), test::TEST_CHALLENGE, test::TEST_SYSTEM_KEY, hmac));
+  EXPECT_EQ(std::memcmp(hmac, kat2_hmac, HMAC_SIZE), 0) << "kat2 mismatch";
+
+  ASSERT_TRUE(crypto::create_hmac(kat3_data, sizeof(kat3_data), test::TEST_CHALLENGE, test::TEST_SYSTEM_KEY, hmac));
+  EXPECT_EQ(std::memcmp(hmac, kat3_hmac, HMAC_SIZE), 0) << "kat3 mismatch";
+}

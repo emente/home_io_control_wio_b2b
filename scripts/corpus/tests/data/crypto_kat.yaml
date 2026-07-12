@@ -1,0 +1,26 @@
+# Cross-language known-answer test vectors for create_hmac() (proto_crypto.cpp).
+#
+# Generated from the real C++ implementation, not the Python port — run:
+#   ./build/test_home_io_control --gtest_also_run_disabled_tests --gtest_filter='*CryptoKat*'
+# (tests/corpus_bootstrap_dump_test.cpp :: DISABLED_PrintCryptoKatVectors). The same three
+# vectors are pinned again, hardcoded, in tests/corpus_crypto_test.cpp — this file and that test
+# must never be regenerated independently of each other; if hub_decisions.h, TEST_SYSTEM_KEY, or
+# proto_crypto.cpp's IV/checksum logic ever changes, regenerate both from the same run.
+#
+# key is the public corpus key (tests/support/test_helpers.h :: TEST_SYSTEM_KEY); challenge is
+# tests/support/test_helpers.h :: TEST_CHALLENGE. All three vectors share both.
+key: "DE CA FC 0F FE E0 FF 1C EB AD BE EF F0 0D BA 11"
+challenge: "01 23 45 67 89 AB"
+vectors:
+  - name: kat1
+    description: single-byte data, shorter than the 8-byte IV prefix (exercises 0x55 padding)
+    data: "00"
+    hmac: "13 68 06 37 CD F3"
+  - name: kat2
+    description: exactly 8 bytes of data (fills the IV prefix with no padding)
+    data: "00 01 43 64 00 80 D8 06"
+    hmac: "25 F8 E7 5F A2 1E"
+  - name: kat3
+    description: 14 bytes of data (longer than the 8-byte IV prefix; extra bytes only feed the checksum)
+    data: "20 02 03 05 04 00 08 AF C0 B8 12 1F 73 A2"
+    hmac: "83 C3 C2 0D FF F8"

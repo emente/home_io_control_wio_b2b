@@ -15,12 +15,15 @@ Checks every capture YAML under tests/corpus/captures/**/*.yaml:
     build.py's dict.get()/index-bounded lookups, defeating the "expectations are
     human-verified" rule (see tests/corpus/README.md).
 
-`key: corpus` cryptographic promises (HMAC / key-transfer payload verification against the
-public corpus key) are not yet checked here — that needs a Python AES/HMAC port and arrives
-in a later tool version. This script emits a labeled SKIP line for that gap instead of
-silently passing it.
+`key: corpus` cryptographic promises are enforced: every 0x3C/0x3D HMAC and 0x31/0x3C/0x32
+key-transfer payload in a `key: corpus` capture must verify/decrypt correctly under the public
+corpus key (protolib.CORPUS_SYSTEM_KEY, mirroring tests/support/test_helpers.h ::
+TEST_SYSTEM_KEY). Independently of `key:`, ANY capture (any key mode) containing a 0x32
+key-transfer frame whose payload does not decrypt to the corpus key is a hard failure — this is
+the safety net that stops an un-re-keyed raw pairing capture (which would leak a real system
+key) from ever being committed, regardless of what its `key:` field claims (design §4.3).
 
-Run via `make corpus-validate` (part of the `lint` composite). Dependency: PyYAML.
+Run via `make corpus-validate` (part of the `lint` composite). Dependencies: PyYAML, cryptography.
 """
 
 import sys
@@ -30,6 +33,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import CLASSIFICATION_ENUM  # noqa: E402
+import protolib  # noqa: E402
 from protolib import CTRL0_LENGTH_MASK, FRAME_MAX_SIZE, FRAME_MIN_SIZE, crc_ccitt  # noqa: E402
 from protolib import parse_hex as protolib_parse_hex  # noqa: E402
 
@@ -163,6 +167,65 @@ def validate_expect(expect: dict, frame_count: int, capture_id: str) -> None:
         require_known_keys(oneway, ALLOWED_EXPECT_ONEWAY_KEYS, f"{capture_id}: expect.oneway")
 
 
+def _non_crc_raw_frame(frame: dict) -> "protolib.RawFrame":
+    """Wrap a YAML frame dict as a protolib.RawFrame holding exactly the non-CRC bytes, so byte
+    offsets (cmd, data, HMAC/key-transfer payload) line up regardless of `crc: present/absent` —
+    reuses protolib's own triple-finders instead of re-deriving frame shape logic here.
+    """
+    raw = bytes.fromhex("".join(frame["hex"].split()))
+    if frame.get("crc") == "present":
+        raw = raw[:-2]
+    return protolib.RawFrame(frame["dir"], raw.hex())
+
+
+def validate_crypto(data: dict, capture_id: str) -> None:
+    """Crypto enforcement — see module docstring. Frames are already known well-formed by the
+    time this runs (validate_frame ran first), so CTRL0-implied length == actual length holds.
+    """
+    frames = [_non_crc_raw_frame(frame) for frame in data["frames"]]
+
+    for key_init, challenge, transfer in protolib.find_key_transfer_triples(frames):
+        challenge_raw = challenge.raw()
+        transfer_raw = transfer.raw()
+        require(
+            len(challenge_raw) >= FRAME_MIN_SIZE + protolib.HMAC_SIZE,
+            f"{capture_id}: 0x3C challenge frame preceding a 0x32 key-transfer is shorter than expected",
+        )
+        require(
+            len(transfer_raw) >= FRAME_MIN_SIZE + protolib.AES_KEY_SIZE,
+            f"{capture_id}: 0x32 key-transfer frame payload is shorter than {protolib.AES_KEY_SIZE} bytes",
+        )
+        parts = protolib.key_transfer_parts(key_init, challenge, transfer)
+        decrypted = protolib.crypt_key(parts.key_init_cmd, parts.challenge, parts.encrypted_payload)
+        require(
+            decrypted == protolib.CORPUS_SYSTEM_KEY,
+            f"{capture_id}: SECURITY: a 0x32 key-transfer frame's payload does not decrypt to the public "
+            "corpus key — this capture must be re-keyed (scripts/corpus/ingest.py --rekey) before it can "
+            "ever be committed; committing it as-is would leak whatever real key it currently encodes",
+        )
+
+    if data["key"] != "corpus":
+        return
+
+    for origin, challenge, response in protolib.find_challenge_response_triples(frames):
+        challenge_raw = challenge.raw()
+        response_raw = response.raw()
+        require(
+            len(challenge_raw) >= FRAME_MIN_SIZE + protolib.HMAC_SIZE,
+            f"{capture_id}: 0x3C challenge frame is shorter than expected",
+        )
+        require(
+            len(response_raw) >= FRAME_MIN_SIZE + protolib.HMAC_SIZE,
+            f"{capture_id}: 0x3D challenge-response frame payload is shorter than {protolib.HMAC_SIZE} bytes",
+        )
+        parts = protolib.hmac_parts(origin, challenge, response)
+        require(
+            protolib.verify_hmac(parts.transcript, parts.hmac, parts.challenge, protolib.CORPUS_SYSTEM_KEY),
+            f"{capture_id}: key: corpus promise broken — a 0x3D HMAC does not verify under the public "
+            "corpus key",
+        )
+
+
 def validate_capture(data: dict, path: Path) -> str:
     for field in ("id", "description", "source", "key", "frames"):
         require(field in data, f"{path}: missing required top-level field '{field}'")
@@ -188,8 +251,7 @@ def validate_capture(data: dict, path: Path) -> str:
     if "expect" in data:
         validate_expect(data["expect"], len(frames), capture_id)
 
-    if data["key"] == "corpus":
-        print(f"  SKIP (crypto validation arrives in a later tool version): {capture_id}")
+    validate_crypto(data, capture_id)
 
     return capture_id
 

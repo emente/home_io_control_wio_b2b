@@ -83,9 +83,9 @@ expect:                              # deliberately sparse — only assert what 
 - `source.*`: provenance metadata. `origin` is required and one of `own-hardware`,
   `github-issue`, `synthetic-bootstrap`. `issue` is required (may be `null`) so the field is
   always present for `issue`-origin captures.
-- `key` (required): `corpus` or `unknown`. See "Key hygiene" below — this is a promise the
-  file makes, and `validate.py` will eventually enforce it cryptographically (crypto
-  verification lands in a later tool version; see "Current limitations").
+- `key` (required): `corpus` or `unknown`. See "Key hygiene" below — this is a promise the file
+  makes, and `validate.py` enforces it cryptographically: every `key: corpus` capture's 0x3C/0x3D
+  HMACs and 0x31/0x3C/0x32 key-transfer payloads must verify under the public corpus key.
 - `node_map` (optional): role -> node-ID-as-captured. Documents the anonymization applied at
   ingest; omit for synthetic fixtures with no real device to anonymize.
 - `frames` (required, at least 1): every frame is a fixture even with zero `expect` entries —
@@ -119,9 +119,9 @@ expect:                              # deliberately sparse — only assert what 
 ### Raw bytes are immutable
 
 Once a capture YAML is committed, its `hex` bytes are never hand-edited. Only
-`scripts/corpus/ingest.py` (re-key/anonymize, arrives in a later tool version) may rewrite
-bytes, and only before the first commit of that capture. `expect:` values may be corrected by
-hand with a commit message explaining why (e.g. the code's prior behavior was itself the bug).
+`scripts/corpus/ingest.py` (`--rekey` for re-key/anonymize) may rewrite bytes, and only before
+the first commit of that capture. `expect:` values may be corrected by hand with a commit
+message explaining why (e.g. the code's prior behavior was itself the bug).
 
 ### Key hygiene — ⚠️ read before ever pasting a pairing log
 
@@ -143,12 +143,23 @@ hand with a commit message explaining why (e.g. the code's prior behavior was it
 just enshrine today's behavior, bugs included. A human (or an AI agent, with explicit
 per-capture review reasoning recorded in the change) confirms each expectation before commit.
 
-### Current limitations
+### Crypto enforcement
 
-The `key: corpus` cryptographic promise (recomputing HMACs / key-transfer payloads against the
-corpus key) is **not yet enforced** by `validate.py` — that requires a Python AES/HMAC port
-and lands in a later tool version. Until then, `validate.py` emits a labeled `SKIP` line for
-this check so the gap stays visible rather than silently passing.
+`validate.py` recomputes and verifies crypto for every capture, independent of what its `key:`
+field claims:
+- `key: corpus` captures: every 0x3C/0x3D HMAC must verify, and every 0x31/0x3C/0x32
+  key-transfer payload must decrypt, under the public corpus key
+  (`scripts/corpus/protolib.py :: CORPUS_SYSTEM_KEY`, mirroring
+  `tests/support/test_helpers.h :: TEST_SYSTEM_KEY`).
+- **Any** capture, regardless of `key:` mode, containing a 0x32 key-transfer frame whose
+  payload does not decrypt to the corpus key is a hard validation failure — this is the safety
+  net that stops an un-re-keyed raw pairing capture from ever being committed.
+
+Cross-language agreement between this Python port and the real C++ implementation is pinned by
+known-answer vectors: `scripts/corpus/tests/data/crypto_kat.yaml` and the hardcoded vectors in
+`tests/corpus_crypto_test.cpp` are both generated from the same C++ run
+(`tests/corpus_bootstrap_dump_test.cpp :: DISABLED_PrintCryptoKatVectors`); a divergence between
+the two implementations fails a gate on both sides.
 
 ## Contribution workflow
 
