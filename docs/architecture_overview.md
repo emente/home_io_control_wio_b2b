@@ -97,8 +97,8 @@ Replace `hioc_heltec_v2` with the normalized `esphome.name` of the ESPHome node 
 ## Test Corpus
 
 A versioned corpus of real captured IO-Homecontrol frames lives at `tests/corpus/captures/`,
-one YAML file per scenario, format spec and contribution workflow in
-[`tests/corpus/README.md`](../tests/corpus/README.md). `scripts/corpus/build.py` renders the
+one YAML file per scenario, format spec and contribution workflow in `tests/corpus/README.md`.
+`scripts/corpus/build.py` renders the
 YAML captures into a git-ignored C++ fixture header (`build/corpus/corpus_generated.h`) before
 every host test build — the YAML is the single source of truth, so there is no generated file
 to keep in sync or commit. `scripts/corpus/ingest.py` scaffolds new captures from pasted on-air

@@ -309,8 +309,8 @@ logger:
    contains commands `0x31`/`0x32`/`0x33` (key init / key transfer / key confirm) is a pairing
    log and should never be pasted into a public issue. If you want to help turn your log into a
    permanent regression fixture instead of a one-off report, see
-   [`tests/corpus/README.md`](tests/corpus/README.md) — command/status logs can be contributed
-   directly; pairing logs should be re-keyed first (that tooling is there too).
+   `tests/corpus/README.md` — command/status logs can be contributed directly; pairing logs
+   should be re-keyed first (that tooling is there too).
 3. Include the board model, radio chip, and full pin mapping you used.
 4. Include the device model or product name if you know it, and mention whether it was previously paired with another hub.
 5. Include any raw values reported by the logs, especially `io_device_id`, `io_device_type`, and `io_subtype`, even if they appear as numeric values such as `0x11`.

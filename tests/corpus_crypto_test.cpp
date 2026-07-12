@@ -1,7 +1,7 @@
 /// @file corpus_crypto_test.cpp
 /// @brief Recorded crypto ground truth from `key: corpus` golden-frame captures.
 ///
-/// Runs over every capture whose `key` promise is `corpus` and whose exchange kind is 
+/// Runs over every capture whose `key` promise is `corpus` and whose exchange kind is
 /// `authenticated_command`: rebuilds the HMAC transcript exactly as `create_challenge_resp()`
 /// does (proto_commands.cpp) and asserts the recomputed HMAC, under the public corpus key
 /// (test_helpers.h :: TEST_SYSTEM_KEY), matches the captured `0x3D` bytes byte-for-byte.

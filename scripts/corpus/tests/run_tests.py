@@ -181,7 +181,7 @@ def test_validate_bad_classification_name_is_rejected() -> None:
 
 
 def test_build_partial_flag_expectation_is_rejected() -> None:
-    # build.py's own hard-error (F-01 area): start/end/protocol must be specified all together
+    # build.py's own hard-error: start/end/protocol must be specified all together
     # or not at all — a partial set would silently assert false for the missing two.
     frame = {"dir": "rx", "hex": "EC 00 00 00 BF AA BB CC 00 01 41 C8 00", "crc": "absent"}
     try:

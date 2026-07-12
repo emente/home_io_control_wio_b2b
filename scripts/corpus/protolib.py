@@ -395,7 +395,7 @@ def _io_capture_metadata_agrees(match: "re.Match") -> bool:
     CTRL0/CRC self-consistency alone would not catch — a self-consistent but wrongly-delimited
     payload still passes those checks.
     """
-    payload = bytes.fromhex("".join(match.group("payload").split()))
+    payload = parse_hex(match.group("payload"))
     if len(payload) != int(match.group("len")):
         return False
     if len(payload) <= 8:
@@ -433,9 +433,8 @@ def parse_log_line(line: str) -> "RawFrame | None":
     if match:
         stage = match.group("stage")
         direction = "tx" if stage == "tx_frame" else "rx"
-        # The structured tag's cmd=/src=/dst=/len= fields are the real parser's decoded output;
-        # cross-checking them against the payload= bytes it decoded them from catches a mangled
-        # paste that CTRL0/CRC self-consistency alone would miss (F-13).
+        # A metadata/payload disagreement routes the frame into the unverified (human-review)
+        # tier rather than dropping it — see _io_capture_metadata_agrees for why.
         agrees = _io_capture_metadata_agrees(match)
         return RawFrame(direction, match.group("payload").strip(), freq=int(match.group("freq")), t_ms=ts_ms,
                         chip=match.group("chip"), unverified=not agrees, source_line=line)
