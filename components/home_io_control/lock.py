@@ -13,8 +13,8 @@ from esphome.const import CONF_ID
 
 from . import home_io_control_ns
 from .platform_common import (
-    create_device_name_sensor,
-    inject_device_name_sensor_id,
+    create_companion_sensors,
+    inject_companion_sensor_ids,
     platform_schema_extension,
     wire_device_binding,
     CONF_HOME_IO_CONTROL_ID,
@@ -26,7 +26,7 @@ IOHomeLock = home_io_control_ns.class_("IOHomeLock", lock.Lock, cg.Component)
 
 
 def _inject_companion_ids(config):
-    return inject_device_name_sensor_id(config, CONF_ID)
+    return inject_companion_sensor_ids(config, CONF_ID)
 
 
 CONFIG_SCHEMA = cv.All(
@@ -44,4 +44,4 @@ async def to_code(config):
 
     parent = await cg.get_variable(config[CONF_HOME_IO_CONTROL_ID])
     await wire_device_binding(var, parent, config)
-    await create_device_name_sensor(config, parent)
+    await create_companion_sensors(config, parent)
