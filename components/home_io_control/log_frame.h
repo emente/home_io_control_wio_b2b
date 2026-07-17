@@ -8,6 +8,7 @@
 #include "redaction.h"
 
 #include "esphome/core/log.h"
+#include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -61,7 +62,11 @@ inline void render_frame_hex_redacted(const uint8_t *data, uint8_t len, char *ou
   if (out_size == 0)
     return;
   if (len >= FRAME_MIN_SIZE && command_carries_key_material(data[FRAME_CMD_OFFSET])) {
-    char header_hex[FRAME_LOG_HEX_BUFFER_SIZE];
+    // Sized for FRAME_MIN_SIZE bytes of "XX " hex (not the general FRAME_LOG_HEX_BUFFER_SIZE) so
+    // GCC's -Wformat-truncation can prove the snprintf() below never truncates into `out`.
+    // +4 rather than +1: bytes_to_hex()'s loop guard (`pos + 4 < out_size`) needs headroom beyond
+    // the last byte's own 3 chars, not just space for the content + null terminator.
+    char header_hex[FRAME_MIN_SIZE * 3 + 4];
     bytes_to_hex(data, FRAME_MIN_SIZE, header_hex, sizeof(header_hex));
     snprintf(out, out_size, "%s[%u bytes masked]", header_hex, static_cast<unsigned>(len - FRAME_MIN_SIZE));
   } else {
@@ -83,10 +88,10 @@ inline void log_frame(const char *prefix, const uint8_t *data, uint8_t len, uint
   }
 
   if (preamble > 0)
-    ESP_LOGI("io_frame", "%s [%u bytes] freq=%u preamble=%u cmd=%s %s: %s", prefix, len, freq, preamble, cmd_str, flags,
-             hex);
+    ESP_LOGI("io_frame", "%s [%u bytes] freq=%" PRIu32 " preamble=%u cmd=%s %s: %s", prefix, len, freq, preamble,
+             cmd_str, flags, hex);
   else
-    ESP_LOGI("io_frame", "%s [%u bytes] freq=%u cmd=%s %s: %s", prefix, len, freq, cmd_str, flags, hex);
+    ESP_LOGI("io_frame", "%s [%u bytes] freq=%" PRIu32 " cmd=%s %s: %s", prefix, len, freq, cmd_str, flags, hex);
 }
 #endif
 
