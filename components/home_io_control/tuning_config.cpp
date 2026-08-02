@@ -4,6 +4,8 @@
 
 #include "tuning_config.h"
 
+#include "proto_constants.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -36,6 +38,10 @@ constexpr float BW_KHZ_41_7 = 41.7F;
 constexpr float BW_KHZ_62_5 = 62.5F;
 constexpr float BW_KHZ_83_3 = 83.3F;
 constexpr float BW_KHZ_125_0 = 125.0F;
+
+/// Numeric kHz value for each LR1121 RX bandwidth option.
+constexpr float BW_KHZ_39_0 = 39.0F;
+constexpr float BW_KHZ_46_9 = 46.9F;
 
 }  // namespace
 
@@ -127,6 +133,58 @@ std::optional<SX1276RxBandwidth> sx1276_bandwidth_from_string(const std::string 
   return std::nullopt;
 }
 
+float lr1121_bandwidth_to_khz(LR1121RxBandwidth bw) {
+  switch (bw) {
+    case LR1121RxBandwidth::BW_39_0_KHZ:
+      return BW_KHZ_39_0;
+    case LR1121RxBandwidth::BW_46_9_KHZ:
+      return BW_KHZ_46_9;
+    case LR1121RxBandwidth::BW_58_6_KHZ:
+      return BW_KHZ_58_6;
+    case LR1121RxBandwidth::BW_78_2_KHZ:
+      return BW_KHZ_78_2;
+    case LR1121RxBandwidth::BW_117_3_KHZ:
+      return BW_KHZ_117_3;
+    case LR1121RxBandwidth::BW_156_2_KHZ:
+      return BW_KHZ_156_2;
+    case LR1121RxBandwidth::BW_187_2_KHZ:
+      return BW_KHZ_187_2;
+  }
+  return BW_KHZ_117_3;
+}
+
+std::string lr1121_bandwidth_to_string(LR1121RxBandwidth bw) {
+  char buf[BANDWIDTH_STR_SIZE];
+  snprintf(buf, sizeof(buf), "%.1f", lr1121_bandwidth_to_khz(bw));
+  return std::string(buf);
+}
+
+std::optional<LR1121RxBandwidth> lr1121_bandwidth_from_string(const std::string &value) {
+  std::string normalized = value;
+  // Normalize: strip whitespace and a trailing "kHz"/"khz" suffix.
+  normalized.erase(std::remove_if(normalized.begin(), normalized.end(), ::isspace), normalized.end());
+  for (char &c : normalized)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (normalized.size() > 3 && normalized.compare(normalized.size() - 3, 3, "khz") == 0)
+    normalized.resize(normalized.size() - 3);
+
+  if (normalized == "39.0" || normalized == "39")
+    return LR1121RxBandwidth::BW_39_0_KHZ;
+  if (normalized == "46.9" || normalized == "46")
+    return LR1121RxBandwidth::BW_46_9_KHZ;
+  if (normalized == "58.6" || normalized == "58")
+    return LR1121RxBandwidth::BW_58_6_KHZ;
+  if (normalized == "78.2" || normalized == "78")
+    return LR1121RxBandwidth::BW_78_2_KHZ;
+  if (normalized == "117.3" || normalized == "117")
+    return LR1121RxBandwidth::BW_117_3_KHZ;
+  if (normalized == "156.2" || normalized == "156")
+    return LR1121RxBandwidth::BW_156_2_KHZ;
+  if (normalized == "187.2" || normalized == "187")
+    return LR1121RxBandwidth::BW_187_2_KHZ;
+  return std::nullopt;
+}
+
 std::optional<DiscoveryCommand> discovery_command_from_string(const std::string &value) {
   std::string normalized = value;
   for (char &c : normalized)
@@ -214,6 +272,14 @@ std::string tuning_config_snapshot(const TuningConfig &cfg) {
     result += " sx1276_discovery_hop_slice_ms=" + std::to_string(cfg.sx1276_discovery_hop_slice_ms);
   if (cfg.sx1262_discovery_hop_slice_ms != DEFAULTS.sx1262_discovery_hop_slice_ms)
     result += " sx1262_discovery_hop_slice_ms=" + std::to_string(cfg.sx1262_discovery_hop_slice_ms);
+  if (cfg.lr1121_rx_bandwidth != DEFAULTS.lr1121_rx_bandwidth)
+    result += " lr1121_rx_bandwidth=" + lr1121_bandwidth_to_string(cfg.lr1121_rx_bandwidth);
+  if (cfg.lr1121_response_preamble != DEFAULTS.lr1121_response_preamble)
+    result += " lr1121_response_preamble=" + std::to_string(cfg.lr1121_response_preamble);
+  if (cfg.lr1121_post_tx_settle_us != DEFAULTS.lr1121_post_tx_settle_us)
+    result += " lr1121_post_tx_settle_us=" + std::to_string(cfg.lr1121_post_tx_settle_us);
+  if (cfg.lr1121_discovery_hop_slice_ms != DEFAULTS.lr1121_discovery_hop_slice_ms)
+    result += " lr1121_discovery_hop_slice_ms=" + std::to_string(cfg.lr1121_discovery_hop_slice_ms);
   if (cfg.lbt_max_retries != DEFAULTS.lbt_max_retries)
     result += " lbt_max_retries=" + std::to_string(cfg.lbt_max_retries);
   if (cfg.lbt_rssi_threshold_dbm != DEFAULTS.lbt_rssi_threshold_dbm)

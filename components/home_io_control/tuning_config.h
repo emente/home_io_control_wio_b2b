@@ -9,6 +9,7 @@
 /// for logging and applying defaults.
 
 #include "proto_frame.h"
+#include "proto_timing.h"
 
 #include <cstdint>
 #include <optional>
@@ -42,6 +43,28 @@ enum class SX1276RxBandwidth : uint8_t {
   BW_62_5_KHZ = 0x03,   ///< 62.5 kHz.
   BW_83_3_KHZ = 0x12,   ///< 83.3 kHz.
   BW_125_0_KHZ = 0x02,  ///< 125.0 kHz — widest selectable option.
+};
+
+/// @brief Valid LR1121 RX bandwidth options (register values).
+///
+/// NOT the same encoding as SX1262, despite the earlier design assumption ("same encoding, same
+/// table") that this enum used to be a type alias of `SX1262RxBandwidth` on. 2026-07-17 hardware
+/// bring-up cross-checked the actual byte values against RadioLib's `LR11x0_commands.h` and found
+/// two of the five borrowed SX1262 values were wrong for this chip: the byte reused here for
+/// "156.2 kHz" actually selects 467.0 kHz on real LR1121 silicon, and the byte reused for
+/// "187.2 kHz" isn't a valid GFSK bandwidth code at all. This is now its own distinct enum with
+/// every value confirmed against RadioLib, plus two narrower options (39.0/46.9 kHz) added for
+/// tuning-bed experimentation — SX1276's own default (41.7 kHz, see `SX1276RxBandwidth`) is
+/// documented as validated against real devices, notably narrower than LR1121/SX1262's shared
+/// 117.3 kHz default, and a plausible lever for the marginal reception seen during bring-up.
+enum class LR1121RxBandwidth : uint8_t {
+  BW_39_0_KHZ = 0x1C,   ///< 39.0 kHz — narrowest; close to SX1276's validated 41.7 kHz default.
+  BW_46_9_KHZ = 0x14,   ///< 46.9 kHz — narrow.
+  BW_58_6_KHZ = 0x0C,   ///< 58.6 kHz.
+  BW_78_2_KHZ = 0x1B,   ///< 78.2 kHz.
+  BW_117_3_KHZ = 0x0B,  ///< 117.3 kHz — default.
+  BW_156_2_KHZ = 0x1A,  ///< 156.2 kHz — wider tolerance for LO offset.
+  BW_187_2_KHZ = 0x12,  ///< 187.2 kHz — widest selectable option.
 };
 
 /// @brief Discovery request command codes selectable by the tuning layer.
@@ -96,6 +119,25 @@ static constexpr uint16_t SX1276_DISCOVERY_HOP_SLICE_MS = 5;
 /// alternate channels to be caught reliably.
 static constexpr uint16_t SX1262_DISCOVERY_HOP_SLICE_MS = 200;
 
+/// LR1121-specific preamble for response/continuation frames within an exchange.
+///
+/// Seeded from the SX1262-validated default (design doc §3.2: "seed every timing/tuning
+/// default from the validated SX1262 values ... they encode protocol-side realities more
+/// than chip quirks"). Not yet independently validated on LR1121 hardware — see the
+/// implementation plan's Step 7 (loopback tuning), which folds a measured value back here.
+static constexpr uint16_t LR1121_RESPONSE_PREAMBLE = SX1262_RESPONSE_PREAMBLE;
+
+/// LR1121-specific post-TX settling delay before re-entering RX.
+///
+/// Seeded from the SX1262-validated default; same rationale as @ref LR1121_RESPONSE_PREAMBLE.
+static constexpr uint16_t LR1121_POST_TX_SETTLE_US = SX1262_POST_TX_SETTLE_US;
+
+/// Per-channel dwell while LR1121 pairing discovery hops across channels.
+///
+/// LR1121 frequency changes require a standby→SetRfFrequency→RX cycle, same as the SX1262,
+/// so the dwell is seeded from the SX1262-validated default pending Step 7 hardware tuning.
+static constexpr uint16_t LR1121_DISCOVERY_HOP_SLICE_MS = SX1262_DISCOVERY_HOP_SLICE_MS;
+
 /// @brief All runtime tunable parameters for pairing and radio diagnostics.
 ///
 /// Values reset to their defaults on every boot. Each field initializes from a
@@ -115,7 +157,12 @@ struct TuningConfig {
   uint16_t sx1276_discovery_hop_slice_ms{
       SX1276_DISCOVERY_HOP_SLICE_MS};  ///< Per-channel dwell while SX1276 discovery hops.
   uint16_t sx1262_discovery_hop_slice_ms{
-      SX1262_DISCOVERY_HOP_SLICE_MS};                      ///< Per-channel dwell while SX1262 discovery hops.
+      SX1262_DISCOVERY_HOP_SLICE_MS};  ///< Per-channel dwell while SX1262 discovery hops.
+  LR1121RxBandwidth lr1121_rx_bandwidth{LR1121RxBandwidth::BW_117_3_KHZ};  ///< LR1121 RX bandwidth selector.
+  uint16_t lr1121_response_preamble{LR1121_RESPONSE_PREAMBLE};             ///< LR1121 response preamble in bytes.
+  uint16_t lr1121_post_tx_settle_us{LR1121_POST_TX_SETTLE_US};             ///< Delay after LR1121 TX before RX (µs).
+  uint16_t lr1121_discovery_hop_slice_ms{
+      LR1121_DISCOVERY_HOP_SLICE_MS};                      ///< Per-channel dwell while LR1121 discovery hops.
   uint8_t lbt_max_retries{LBT_MAX_RETRIES};                ///< LBT retries before forced TX.
   int16_t lbt_rssi_threshold_dbm{LBT_RSSI_THRESHOLD_DBM};  ///< LBT channel-free threshold (dBm).
 
@@ -167,6 +214,21 @@ std::string sx1276_bandwidth_to_string(SX1276RxBandwidth bw);
 /// @param value YAML string such as "41.7" or "83.3kHz".
 /// @return Bandwidth enum, or std::nullopt on invalid input.
 std::optional<SX1276RxBandwidth> sx1276_bandwidth_from_string(const std::string &value);
+
+/// @brief Convert an LR1121 bandwidth enum to the numeric kHz value used in YAML/logs.
+/// @param bw LR1121 bandwidth enum.
+/// @return Floating-point kHz value (39.0, 46.9, 58.6, 78.2, 117.3, 156.2, or 187.2).
+float lr1121_bandwidth_to_khz(LR1121RxBandwidth bw);
+
+/// @brief Format an LR1121 bandwidth enum as its YAML/UI option string (bare kHz number).
+/// @param bw LR1121 bandwidth enum.
+/// @return Bandwidth rendered with one decimal place (e.g. "117.3").
+std::string lr1121_bandwidth_to_string(LR1121RxBandwidth bw);
+
+/// @brief Convert a YAML LR1121 bandwidth string to the enum value.
+/// @param value YAML string such as "117.3" or "39.0kHz".
+/// @return Bandwidth enum, or std::nullopt on invalid input.
+std::optional<LR1121RxBandwidth> lr1121_bandwidth_from_string(const std::string &value);
 
 /// @brief Format the current tuning configuration as a one-line YAML-compatible snapshot.
 ///

@@ -4,38 +4,51 @@
 
 
 # === Recipe fragments (shared) ==========================================================
-# $1 is the device stem (e.g., v2, v3-monitor)
+# $1 is the full config-file stem (e.g., heltec-wifi-lora-32-v2, t3s3-lr1121).
 define compile_recipe
-	@file="heltec-wifi-lora-32-$1.yaml"; \
+	@file="$1.yaml"; \
 	echo "Compiling $$$$file"; \
 	docker compose run --rm esphome compile "$$$$file"
 endef
 
 define upload_recipe
-	@file="heltec-wifi-lora-32-$1.yaml"; \
+	@file="$1.yaml"; \
 	echo "Uploading to $$$$file"; \
 	docker compose run --rm esphome run "$$$$file"
 endef
 
 define logs_recipe
-	@file="heltec-wifi-lora-32-$1.yaml"; \
+	@file="$1.yaml"; \
 	echo "Streaming logs from $$$$file"; \
 	docker compose run --rm esphome logs "$$$$file"
 endef
 
 define clean_recipe
-	@file="heltec-wifi-lora-32-$1.yaml"; \
+	@file="$1.yaml"; \
 	echo "Cleaning build artifacts for $$$$file"; \
 	docker compose run --rm esphome clean "$$$$file"
 endef
 
 # === Explicit device-variant targets (for tab completion & direct invocation) ===
-DEVICE_VARIANTS := v2 v2-monitor v3 v3-monitor
+# Each entry pairs a full config-file stem with the short target suffix used for
+# compile-<suffix> / upload-<suffix> / etc. The Heltec entries keep the exact target
+# names (compile-v2, ...) that existed before the T3-S3 board was added; only the
+# recipe fragments above changed shape (full stem instead of a hardcoded prefix) to
+# make room for stems that don't share the "heltec-wifi-lora-32-" prefix.
+DEVICE_VARIANTS := heltec-wifi-lora-32-v2:v2 \
+                    heltec-wifi-lora-32-v2-monitor:v2-monitor \
+                    heltec-wifi-lora-32-v3:v3 \
+                    heltec-wifi-lora-32-v3-monitor:v3-monitor \
+                    t3s3-lr1121:t3 \
+                    t3s3-lr1121-monitor:t3-monitor
 
-$(foreach v,$(DEVICE_VARIANTS),$(eval compile-$(v): ; $(call compile_recipe,$(v))))
-$(foreach v,$(DEVICE_VARIANTS),$(eval upload-$(v): ; $(call upload_recipe,$(v))))
-$(foreach v,$(DEVICE_VARIANTS),$(eval logs-$(v): ; $(call logs_recipe,$(v))))
-$(foreach v,$(DEVICE_VARIANTS),$(eval clean-$(v): ; $(call clean_recipe,$(v))))
+variant_stem = $(word 1,$(subst :, ,$1))
+variant_suffix = $(word 2,$(subst :, ,$1))
+
+$(foreach v,$(DEVICE_VARIANTS),$(eval compile-$(call variant_suffix,$(v)): ; $(call compile_recipe,$(call variant_stem,$(v)))))
+$(foreach v,$(DEVICE_VARIANTS),$(eval upload-$(call variant_suffix,$(v)): ; $(call upload_recipe,$(call variant_stem,$(v)))))
+$(foreach v,$(DEVICE_VARIANTS),$(eval logs-$(call variant_suffix,$(v)): ; $(call logs_recipe,$(call variant_stem,$(v)))))
+$(foreach v,$(DEVICE_VARIANTS),$(eval clean-$(call variant_suffix,$(v)): ; $(call clean_recipe,$(call variant_stem,$(v)))))
 
 # === Convenience defaults (delegate to v2) ====================================
 compile: compile-v2
@@ -85,14 +98,23 @@ tuning-sync:
 	@echo "Checking tuning parameter sync (tuning.py <-> tuning_registry.cpp)..."
 	@python3 scripts/check-tuning-sync.py
 
+# Detects (and reports) config/tests/.esphome/build/<env>/ dirs with a stale or
+# half-regenerated object cache; see scripts/check-build-cache.py. Wired automatically
+# (with --clean) into firmware-test and run-clang-tidy.sh, so this is mainly for manual
+# inspection.
+check-build-cache:
+	@python3 scripts/check-build-cache.py
+
 # Wipes config/tests/.esphome/build/<env>/ for every config/tests/test-*.yaml config (the ones
 # make clang-tidy / firmware-test / check build against), plus config/tests/.esphome/storage/
 # (per-config validated-YAML cache, keyed by config filename rather than device_name, so it's
 # wiped in one shot instead of per-env). Uses Docker rather than a host-side rm — these paths are
 # root-owned (created by a previous Docker run), so a plain `rm` on the host fails with Permission
-# denied — including yamllint's read of storage/*.validated.yaml during `make lint`. Run this
-# before make clang-tidy / firmware-test / check whenever a build directory might be stale or
-# half-regenerated (see AGENTS.md).
+# denied — including yamllint's read of storage/*.validated.yaml during `make lint`. This is the
+# manual full-wipe hammer; scripts/check-build-cache.py now detects and auto-cleans the targeted
+# per-env staleness case automatically (see check-build-cache above), so reach for this instead
+# when you want a clean slate (e.g. storage/ permission issues, or a hunch the automated check
+# missed something).
 clean-test-cache:
 	@echo "Cleaning test build caches in config/tests/.esphome/build/"
 	@for cfg in config/tests/test-*.yaml; do \
@@ -106,6 +128,7 @@ clean-test-cache:
 
 # Compilation tests for all platform configs
 firmware-test:
+	@python3 scripts/check-build-cache.py --clean
 	@echo "Compiling test configurations in config/tests/"
 	@for cfg in config/tests/test-*.yaml; do \
 	  name=$$(basename "$$cfg"); \
@@ -143,16 +166,59 @@ corpus-gen:
 	@mkdir -p build
 	@python3 scripts/corpus/build.py
 
+# --- Host unit-test build (incremental; objects mirror source paths) ---
+# HOST_VARIANT selects the object/binary tree; "asan" adds sanitizer flags (see unit-test-asan).
+HOST_VARIANT ?= default
+HOST_BUILD_DIR := build/host/$(HOST_VARIANT)
+HOST_OBJ_DIR := $(HOST_BUILD_DIR)/obj
+HOST_EXTRA_FLAGS ?=
+HOST_CXXFLAGS := -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-but-set-variable \
+                 -Wno-unused-variable -Wno-reorder -DIRAM_ATTR= \
+                 $(UNIT_TEST_DEFINES) $(INCLUDES) $(HOST_EXTRA_FLAGS)
+
+HOST_SRCS := $(COMPONENT_SRCS) $(STUB_SRCS) $(TEST_SRCS)
+HOST_OBJS := $(patsubst %.cpp,$(HOST_OBJ_DIR)/%.o,$(HOST_SRCS))
+HOST_DEPS := $(HOST_OBJS:.o=.d)
+HOST_TEST_BIN := $(HOST_BUILD_DIR)/test_home_io_control
+
+$(HOST_OBJ_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	g++ $(HOST_CXXFLAGS) -MMD -MP -c $< -o $@
+
+$(HOST_TEST_BIN): $(HOST_OBJS)
+	g++ $(HOST_CXXFLAGS) $^ -lgtest -lgtest_main -pthread -o $@
+
+-include $(HOST_DEPS)
+
+# Builds $(HOST_TEST_BIN) for the current HOST_VARIANT and runs it. Shared by unit-test and
+# unit-test-asan (invoked as a sub-make with HOST_VARIANT/HOST_EXTRA_FLAGS overridden on the
+# command line, which is what makes $(HOST_TEST_BIN) resolve to the right variant tree below).
+host-run: $(HOST_TEST_BIN)
+	@echo "Running tests ($(HOST_VARIANT))..."
+	@UBSAN_OPTIONS=print_stacktrace=1 \
+		LSAN_OPTIONS=suppressions=$(CURDIR)/tests/asan/lsan.supp \
+		./$(HOST_TEST_BIN)
+
+# Public entry point: corpus-gen runs first (ordering!), then a parallel sub-make builds/links.
+# Parallelism is scoped to this sub-make (not a global -j) so the docker/esphome targets in
+# this Makefile stay serial. After changing HOST_CXXFLAGS, run `make clean-host` — make does
+# not hash command lines, so flag-only changes don't invalidate existing objects.
 unit-test: corpus-gen
 	@echo "Building Google Test unit tests for home_io_control (host-only)..."
-	@mkdir -p build
-	g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-unused-variable -Wno-reorder -DIRAM_ATTR= \
-		$(UNIT_TEST_DEFINES) $(INCLUDES) \
-		$(COMPONENT_SRCS) $(STUB_SRCS) $(TEST_SRCS) \
-		-lgtest -lgtest_main -pthread \
-		-o build/test_home_io_control
-	@echo "Linking complete. Running tests..."
-	@./build/test_home_io_control
+	@$(MAKE) --no-print-directory -j$(shell nproc) host-run
+
+# ASan/UBSan variant: same sources and rules as unit-test, built into a fully separate object
+# tree (build/host/asan/) so the two variants never poison each other. Uninstrumented system
+# libgtest is fine to link against — ASan intercepts allocation globally.
+ASAN_HOST_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all -g -O1 -fno-omit-frame-pointer
+
+unit-test-asan: corpus-gen
+	@echo "Building Google Test unit tests for home_io_control (ASan/UBSan)..."
+	@$(MAKE) --no-print-directory -j$(shell nproc) \
+		HOST_VARIANT=asan HOST_EXTRA_FLAGS="$(ASAN_HOST_FLAGS)" host-run
+
+clean-host:
+	rm -rf build/host
 
 
 # === Documentation =============================================================
@@ -166,8 +232,15 @@ doxygen:
 
 # === Composite targets =========================================================
 
+# Every sub-target of `lint` below must have a matching CI job in .github/workflows/ci.yml,
+# so a local-only check can never silently drift out of CI coverage:
+#   format-check    -> format
+#   yamllint        -> yamllint
+#   clang-tidy      -> tidy
+#   tuning-sync     -> tuning-sync
+#   corpus-validate -> corpus-validate
 lint: format-check yamllint clang-tidy tuning-sync corpus-validate
-test: unit-test firmware-test
+test: unit-test unit-test-asan firmware-test
 check: lint test doxygen
 
 # Backward compatibility aliases (deprecated, use new names)
@@ -179,6 +252,6 @@ test-unit: unit-test
 
 .PHONY: dashboard \
 		format format-check yamllint clang-tidy tidy tuning-sync corpus-validate corpus-gen \
-		firmware-test unit-test lint test check \
+		firmware-test unit-test unit-test-asan host-run clean-host lint test check \
 		test-compile test-unit \
-		doxygen clean-docs
+		doxygen clean-docs clean-test-cache

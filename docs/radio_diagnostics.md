@@ -107,8 +107,9 @@ Each UI change is also logged in YAML-compatible form, ready to paste back:
 
 Parameters fall into two groups: the **radio / physical layer** (how the chip transmits and
 receives) and the **pairing protocol** (which frames are sent and how the hub waits for
-answers). The *Radio* column shows which chip a parameter affects — *SX1262* parameters are
-ignored on SX1276 boards and vice-versa; *both* applies everywhere.
+answers). The *Radio* column shows which chip a parameter affects — a chip-specific parameter
+(*SX1262*, *SX1276*, or *LR1121*) is ignored on any other chip's boards; *both* applies
+everywhere.
 
 Each parameter below has a short **What we've seen** note. These summarise concrete behaviour
 observed while getting pairing to work — treat them as starting hints, not guarantees, because
@@ -133,6 +134,10 @@ your device may differ.
 | `sx1276_response_preamble` | SX1276 | `12` | 8–256 B | Preamble length on reply frames, for the peer to lock on. |
 | `sx1276_discovery_hop_slice_ms` | SX1276 | `5` | 5–200 ms | Per-channel dwell while hopping during discovery. |
 | `sx1262_discovery_hop_slice_ms` | SX1262 | `200` | 50–500 ms | Per-channel dwell while hopping during discovery. |
+| `lr1121_rx_bandwidth` | LR1121 | `117.3` | `39.0` / `46.9` / `58.6` / `78.2` / `117.3` / `156.2` / `187.2` (kHz) | Receiver bandwidth; wider tolerates post-TX frequency offset. |
+| `lr1121_response_preamble` | LR1121 | `64` | 32–256 B | Preamble length on reply frames, for the peer to lock on. |
+| `lr1121_post_tx_settle_us` | LR1121 | `500` | 0–2000 µs | Settling delay after TX before switching back to RX. |
+| `lr1121_discovery_hop_slice_ms` | LR1121 | `200` | 50–500 ms | Per-channel dwell while hopping during discovery. |
 | `lbt_max_retries` | both | `5` | 0–10 | Listen-before-talk carrier-sense attempts before TX. |
 | `lbt_rssi_threshold_dbm` | both | `-90` | -95 to -70 dBm | RSSI below which the channel counts as free. |
 | `pairing_discovery_commands` | both | `["0x28"]` | ordered list of `0x28` / `0x2A` / `0x2E` | Which discovery command(s) to send, and in what order. |
@@ -219,6 +224,23 @@ sent on, hopping during the wait is essential (this was the single biggest disco
 Known implementations dwell only a few milliseconds per channel, extending the dwell when a
 preamble is detected — the SX1276 uses that fast cycle. The SX1262 needs a much longer
 per-channel dwell (~200 ms) because its shorter-preamble responses are harder to catch mid-hop.
+
+#### `lr1121_rx_bandwidth` / `lr1121_response_preamble` / `lr1121_post_tx_settle_us` / `lr1121_discovery_hop_slice_ms`
+
+The LR1121 equivalents of the four SX1262 knobs above — same meaning, same defaults, same
+register-level reasoning (the LR1121's GFSK bandwidth encoding is register-identical to the
+SX1262's, and it needs the same standby→retune→RX hop cycle, no fast hop).
+
+*Observations:* the defaults were seeded from SX1262's validated values and are now confirmed
+working on real LR1121 hardware — authenticated open/close/stop exchanges complete reliably
+against a real awning at the stock `117.3` kHz / `64` B / `500` µs / `200` ms settings. Two of
+`lr1121_rx_bandwidth`'s enum values (39.0/46.9 kHz) turned out to have the wrong register
+encoding when borrowed directly from SX1262 and were corrected — the full, corrected option set
+is `39.0` / `46.9` / `58.6` / `78.2` / `117.3` / `156.2` / `187.2` kHz. The main variable that
+still matters in practice is RF link quality (RSSI) rather than these timing/bandwidth knobs —
+weak signal shows up as intermittent frame loss on either leg of an exchange, which the
+existing per-command retry already absorbs; there was no need to touch these defaults to get a
+working exchange.
 
 #### `lbt_max_retries` / `lbt_rssi_threshold_dbm`
 
@@ -353,11 +375,12 @@ is a general starting point, not a guarantee — different devices need differen
    ```yaml
    pairing_discovery_wait_ms: 3000
    pairing_discovery_initial_dwell_ms: 500
-   sx1262_discovery_hop_slice_ms: 250   # SX1262 boards only
+   sx1262_discovery_hop_slice_ms: 250   # SX1262 boards only; use lr1121_discovery_hop_slice_ms on LR1121
    ```
 
 7. **If discovery succeeds but key exchange fails** (`saw_challenge=0`, or the exchange stops
-   after discovery), give the SX1262 receiver more margin around the turnaround:
+   after discovery), give the receiver more margin around the turnaround (SX1262 shown; on
+   LR1121 boards use the `lr1121_*` equivalents instead):
    ```yaml
    sx1262_post_tx_settle_us: 750    # then 1000
    sx1262_rx_bandwidth: 156.2
