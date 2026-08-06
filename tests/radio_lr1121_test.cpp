@@ -5,71 +5,12 @@
 
 #include "test_helpers.h"
 #include "stubs/radio_test_common.h"
+#include "stubs/scripted_spi.h"
 
 #include <gtest/gtest.h>
 #include <vector>
 
 using namespace esphome::home_io_control;
-
-// ============================================================================
-// Scripted SPI: records each transaction (spi_enable..spi_disable) as its own byte
-// vector and plays back a queued sequence of response bytes across all transactions.
-//
-// MockSpi (radio_test_common.h) always returns 0 and does not record writes, so it
-// cannot support the byte-exact assertions this driver's two-transaction command
-// protocol needs (design implementation plan §0.5.2: "if [MockSpi] only records,
-// plan a scriptable ScriptedSpi local to the LR1121 test file"). This class is local
-// to this file and does not change MockSpi's behavior for any other test.
-// ============================================================================
-
-class ScriptedSpi : public esphome::home_io_control::SpiAccess {
- public:
-  void spi_enable() override { current_.clear(); }
-  void spi_disable() override { transactions_.push_back(current_); }
-  uint8_t spi_transfer(uint8_t data) override {
-    current_.push_back(data);
-    return this->next_response_();
-  }
-  void spi_write(uint8_t data) override { current_.push_back(data); }
-  uint8_t spi_read() override {
-    current_.push_back(0);
-    return this->next_response_();
-  }
-
-  // Queue response bytes played back in order across every subsequent transfer/read.
-  void queue_response(uint8_t byte) { response_queue_.push_back(byte); }
-  void queue_responses(std::initializer_list<uint8_t> bytes) {
-    for (uint8_t b : bytes)
-      response_queue_.push_back(b);
-  }
-
-  // Every completed transaction (one spi_enable..spi_disable cycle) as its written bytes.
-  const std::vector<std::vector<uint8_t>> &transactions() const { return transactions_; }
-
-  // Find the first transaction whose bytes start with the given 16-bit opcode.
-  // Returns -1 if not found.
-  int find_opcode(uint16_t opcode) const {
-    uint8_t msb = (opcode >> 8) & 0xFF;
-    uint8_t lsb = opcode & 0xFF;
-    for (size_t i = 0; i < transactions_.size(); i++) {
-      if (transactions_[i].size() >= 2 && transactions_[i][0] == msb && transactions_[i][1] == lsb)
-        return static_cast<int>(i);
-    }
-    return -1;
-  }
-
- private:
-  uint8_t next_response_() {
-    if (read_idx_ < response_queue_.size())
-      return response_queue_[read_idx_++];
-    return 0;
-  }
-
-  std::vector<uint8_t> current_;
-  std::vector<std::vector<uint8_t>> transactions_;
-  std::vector<uint8_t> response_queue_;
-  size_t read_idx_{0};
-};
 
 // ============================================================================
 // Testable subclass of RadioLR1121
@@ -225,6 +166,34 @@ TEST(RadioLR1121, InitSucceedsOnCorrectDeviceType) {
   bool ok = radio.init();
   EXPECT_TRUE(ok) << "init() should succeed when GetVersion reports device type 0x03 (LR1121)";
   EXPECT_FALSE(radio.is_failed());
+}
+
+// ============================================================================
+// Firmware-version staleness check — lr1121_firmware_is_outdated() (pure, no I/O)
+// ============================================================================
+
+TEST(RadioLR1121, FirmwareOlderMajorIsOutdated) {
+  EXPECT_TRUE(lr1121_firmware_is_outdated(LR1121_KNOWN_LATEST_FW_MAJOR - 1, 0xFF))
+      << "an older major version is outdated regardless of the minor byte";
+}
+
+TEST(RadioLR1121, FirmwareSameMajorOlderMinorIsOutdated) {
+  ASSERT_GT(LR1121_KNOWN_LATEST_FW_MINOR, 0) << "precondition: test needs room to go one minor version older";
+  EXPECT_TRUE(lr1121_firmware_is_outdated(LR1121_KNOWN_LATEST_FW_MAJOR, LR1121_KNOWN_LATEST_FW_MINOR - 1));
+}
+
+TEST(RadioLR1121, FirmwareExactlyLatestIsNotOutdated) {
+  EXPECT_FALSE(lr1121_firmware_is_outdated(LR1121_KNOWN_LATEST_FW_MAJOR, LR1121_KNOWN_LATEST_FW_MINOR));
+}
+
+TEST(RadioLR1121, FirmwareNewerMinorIsNotOutdated) {
+  EXPECT_FALSE(lr1121_firmware_is_outdated(LR1121_KNOWN_LATEST_FW_MAJOR, LR1121_KNOWN_LATEST_FW_MINOR + 1))
+      << "a version newer than what this file knows about must never be flagged outdated";
+}
+
+TEST(RadioLR1121, FirmwareNewerMajorIsNotOutdated) {
+  EXPECT_FALSE(lr1121_firmware_is_outdated(LR1121_KNOWN_LATEST_FW_MAJOR + 1, 0x00))
+      << "a future major version must never be flagged outdated even with minor=0";
 }
 
 TEST(RadioLR1121, TcxoCommandEncodesYamlVoltageCode) {

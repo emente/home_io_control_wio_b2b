@@ -32,6 +32,7 @@ Contributions are welcome. If you have hardware that is not listed here, an unsu
 - **1W remote button events**: Overheard 1W transmissions (remotes *or* wind/rain sensors — same broadcast mechanism) fire an `esphome.home_io_control_sender_event` event for opted-in sender IDs (`exposed_senders`), so you can trigger Home Assistant automations directly from a physical remote press or sensor trigger
 - **Optimistic cover state**: Linked-1W-remote presses and HA-issued open/close/stop/set-position commands show the requested movement direction immediately, before the confirming poll or device response lands (`optimistic_state`, default on, per-cover opt-out); remotes can also be linked to a whole device class (`class:awning`) instead of enumerating node IDs
 - **Home Assistant integration**: Cover devices appear as native cover entities with full position support, and tilt-capable blinds also expose slat-angle control
+- **LR1121 radio-firmware flashing (opt-in, hardware-confirmed)**: Flash a Semtech-published transceiver firmware image onto the LR1121 directly from a Home Assistant button, no vendor tooling required — see [LR1121 Firmware Update](docs/home_io_control.md#lr1121-firmware-update)
 - **SX1276, SX1262 & LR1121 support**: Works across three radio chips — SX1276 uses hardware IoHomeOn mode; SX1262 and LR1121 share a software PHY (UART framing + CRC in software), since neither has an IoHomeOn-equivalent hardware mode
 
 ## Hardware Requirements
@@ -51,12 +52,15 @@ The table below lists board mappings that are known to be plausible for this com
 | LilyGO T-Beam 1W SX1262 | SX1262 | Untested | `clk_pin: 13`, `mosi_pin: 11`, `miso_pin: 12` | `cs_pin: 15`, `rst_pin: 3`, `dio1_pin: 1`, `busy_pin: 38` | Use `radio_type: sx1262`; vendor docs suggest that `fem_en_pin: 40` and `fem_pa_pin: 21` might be needed |
 | Any other ESP32 + SX1276/SX1262/LR1121 | Any | Untested | Board-specific | Board-specific | Use the chip pinout and set the appropriate `sx1276`, `sx1262`, or `lr1121` `radio_type` |
 
+GPIO5 (`clk_pin` on the classic-ESP32 boards above) and GPIO3 (`miso_pin` on the ESP32-S3 T3-S3 boards) are hardware strapping pins. ESPHome refuses to reuse a strapping pin as a plain GPIO unless `ignore_strapping_warning: true` is set on that pin's expanded schema, e.g. `clk_pin: {number: 5, ignore_strapping_warning: true}` — see [heltec-wifi-lora-32-v2.yaml](https://github.com/laberning/home_io_control/blob/main/config/heltec-wifi-lora-32-v2.yaml) or [t3s3-lr1121.yaml](https://github.com/laberning/home_io_control/blob/main/config/t3s3-lr1121.yaml) for the pattern.
+
 ### Confirmed Board Notes
 
 - Heltec LoRa32 v2 is the confirmed SX1276 reference platform used during development. Pairing (discover & pair) is confirmed working on this board.
 - Heltec WiFi LoRa32 V3.2 is the confirmed SX1262 platform for authenticated 2W exchanges and pairing.
 - The Heltec V4 family is closely related to V3 electrically, so it should also work, but this has not been validated yet.
 - LilyGO T3-S3 LR1121 is confirmed for authenticated 2W control exchanges (open/close/stop, with real position/state feedback decoded from the device's responses) against a real Somfy Sunea IO awning motor. Pairing/discovery has not been separately validated on this board yet — the tested device was already paired via another hub.
+- The LR1121's own radio firmware (separate from this ESPHome component) is field-upgradable and versioned by Semtech. On boot, the LR1121 diagnostic log block always shows the chip-reported firmware version and, when it's older than the newest version known to this codebase, an extra line pointing at the update instructions. That "known latest" version is baked into the component at build time, not queried live, so it only reflects what was true when this repo was last updated. This project **can** flash a Semtech-published transceiver firmware image directly — see [LR1121 Firmware Update](docs/home_io_control.md#lr1121-firmware-update) — up to whatever your chip's own bootloader allows; on the common `0x2100` bootloader that ceiling is firmware `1.3`, since reaching `1.4` needs a bootloader update (`0x2100` → `0x2101`) that is deliberately out of scope, consistent with this project generally reporting versions and leaving vendor-level firmware operations to vendor tooling: firmware images and changelog at [Lora-net/radio_firmware_images](https://github.com/Lora-net/radio_firmware_images/tree/master/lr1121/transceiver), and the update procedure/tool at [Lora-net/SWTL001](https://github.com/Lora-net/SWTL001).
 
 ## Installation
 
@@ -114,7 +118,10 @@ external_components:
 
 # Set the pinout for your device - this example uses Heltec WiFi LoRa32 v2.
 spi:
-  clk_pin: 5
+  clk_pin:
+    number: 5
+    # GPIO5 is a strapping pin on classic ESP32; required to reuse it as a plain SPI clock pin.
+    ignore_strapping_warning: true
   mosi_pin: 27
   miso_pin: 19
 
@@ -122,6 +129,7 @@ home_io_control:
   cs_pin: 18
   rst_pin: 14
   dio0_pin: 26
+  radio_type: sx1276
   # If this device was previously paired with another hub, enter that hub's 
   # Node ID and System Key below to allow the devices to reconnect automatically. 
   # Otherwise, generate new values according to the requirements below:
