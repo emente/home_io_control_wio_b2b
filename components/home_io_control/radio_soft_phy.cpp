@@ -187,6 +187,30 @@ UartProbeResult find_uart_probe(const uint8_t *raw, uint8_t raw_len) {
   return best;
 }
 
+// === Length-driven receive helpers ===
+
+uint8_t soft_phy_raw_bytes_for_frame(uint8_t frame_len) {
+  // The CRC is appended before UART packing (see SoftPhyDriverBase::send_packet), so it occupies
+  // two cells of its own.
+  const uint16_t cells = (uint16_t) frame_len + FRAME_CRC_SIZE;
+  const uint16_t bits = cells * UART_CELL_BITS;
+  return (uint8_t) ((bits + 7) / 8);
+}
+
+uint8_t soft_phy_peek_frame_length(const uint8_t *raw, uint8_t raw_len) {
+  uint8_t best = 0;
+  for (uint8_t bit_offset = 0; bit_offset < UART_PROBE_MAX_BIT_OFFSET; bit_offset++) {
+    uint8_t ctrl0 = 0;
+    if (decode_uart_probe(raw, raw_len, bit_offset, &ctrl0, 1) != 1)
+      continue;  // start/stop bits don't frame here — wrong alignment
+    const auto frame_len = (uint8_t) ((ctrl0 & CTRL0_LENGTH_MASK) + 1);
+    if (frame_len < FRAME_MIN_SIZE || frame_len > FRAME_MAX_SIZE)
+      continue;
+    best = std::max(frame_len, best);
+  }
+  return best;
+}
+
 // === Software UART encode (TX) ===
 
 uint8_t uart_encode_packet(const uint8_t *data, uint8_t len, uint8_t *encoded, uint8_t encoded_max_len) {
@@ -213,7 +237,16 @@ uint8_t uart_encode_packet(const uint8_t *data, uint8_t len, uint8_t *encoded, u
     write_bit(bit_pos++, 1);  // UART stop bit
   }
 
-  return (total_bits + 7) / 8;
+  // A 10-bit cell only lands on a byte boundary every fourth byte, so the last byte of the buffer
+  // is usually part data, part leftover — and the chip transmits it whole either way. Those
+  // leftover bits are line-idle time, and a UART line idles *high*: zero-filling them puts what
+  // looks like a start bit on air immediately after the frame's last stop bit. The SX1276's
+  // IoHomeOn coder, which this software PHY exists to reproduce, never emits that. Pad with ones.
+  const uint8_t encoded_len = (total_bits + 7) / 8;
+  for (uint16_t pad_pos = total_bits; pad_pos < (uint16_t) encoded_len * 8; pad_pos++)
+    write_bit(pad_pos, 1);
+
+  return encoded_len;
 }
 
 }  // namespace home_io_control

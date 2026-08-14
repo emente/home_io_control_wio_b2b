@@ -177,6 +177,16 @@ struct TuningConfig {
   uint8_t lbt_max_retries{LBT_MAX_RETRIES};                ///< LBT retries before forced TX.
   int16_t lbt_rssi_threshold_dbm{LBT_RSSI_THRESHOLD_DBM};  ///< LBT channel-free threshold (dBm).
 
+  // --- Exchange response windows ---
+  // How long the hub listens for a device's reply. Tunable because the right value is a property
+  // of the *device*, not of the radio or the protocol: observed reply latencies on one network
+  // span two orders of magnitude (a mains Oximo 40 at ~23 ms, a solar RS100 at 29-3052 ms). See
+  // RESPONSE_START_WAIT_MS for the measurements behind the defaults.
+  uint16_t exchange_start_response_wait_ms{
+      RESPONSE_START_WAIT_MS};  ///< Reply window for a start frame (wakes a sleeping device).
+  uint16_t exchange_response_wait_ms{
+      RESPONSE_WAIT_MS};  ///< Reply window for continuation frames and the post-auth final response.
+
   // --- Pairing protocol ---
   std::vector<DiscoveryCommand> pairing_discovery_commands{
       DiscoveryCommand::DISCOVER};                                       ///< Ordered discovery commands.
