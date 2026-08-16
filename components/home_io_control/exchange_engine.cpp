@@ -9,6 +9,7 @@
 #include "exchange_engine.h"
 
 #include "hub_decisions.h"
+#include "log_frame.h"
 #include "proto_commands.h"
 #include "proto_constants.h"
 #include "proto_crypto.h"
@@ -48,6 +49,14 @@ void ExchangeEngine::record_debug(const char *stage, uint8_t tries, bool saw_cha
   this->debug_.saw_challenge = this->debug_.saw_challenge || saw_challenge;
 
   const RadioCaptureInfo &capture = (*this->radio_ptr_)->get_last_capture();
+  // Every wait_for_packet() clears the radio's capture before it starts listening, so a plain
+  // "latest wins" here meant a failure report always described the *final*, timed-out wait — which
+  // by construction saw nothing. `cap_valid=0` on a timeout was therefore tautological rather than
+  // evidence, and it hid the only distinction that matters when a device goes quiet: whether the
+  // radio never detected a frame at all, or received one this layer then threw away. Keep the
+  // first informative capture of the exchange instead of letting a later empty one erase it.
+  if (!capture.valid && this->debug_.capture_valid)
+    return;
   this->debug_.capture_valid = capture.valid;
   this->debug_.capture_rx_done = capture.rx_done;
   this->debug_.capture_crc_error = capture.crc_error;
@@ -186,6 +195,26 @@ const char *inbound_stage_name(exchange::InboundAuthState state) {
 /// Check if frame is a 0x3D challenge response.
 bool frame_is_challenge_response(const IoFrame &frame) { return frame.cmd == CMD_CHALLENGE_RESP; }
 
+/// Log a frame that arrived but could not be parsed. These were recorded into the debug snapshot
+/// and never printed, which made "the radio heard nothing" and "we heard something and rejected
+/// it" look identical in a failure report — the two need opposite fixes. Redacted through the same
+/// helper as every other frame log, so an unparsable frame can't leak key material by being
+/// unrecognisable (see ADR 0011).
+void log_unparsable_frame(const char *stage, int tries, const RadioRxPacket &packet) {
+  // The *fact* stays unconditional: it means the receiver is demodulating traffic it cannot
+  // decode, which is a real fault worth surfacing to someone who never enables a debug flag — a
+  // misconfigured RX bandwidth showed up as several of these a minute. The bytes only help someone
+  // already debugging the PHY, and dumping them at that rate is what makes a log unreadable, so
+  // they sit behind the frame-log flag with the rest of that detail.
+  ESP_LOGW(TAG, "%s try=%d: %u bytes did not parse as a frame on %" PRIu32 " Hz", stage, tries, packet.len,
+           packet.freq_hz);
+#ifdef IOHOME_FRAME_LOG
+  char hex[FRAME_LOG_HEX_BUFFER_SIZE];
+  render_frame_hex_redacted(packet.data, packet.len, hex, sizeof(hex));
+  ESP_LOGD(TAG, "  raw: %s", hex);
+#endif
+}
+
 /// Log an exchanged frame with context (stage, try index, length).
 void log_exchange_frame(const char *stage, int tries, const IoFrame &frame, uint8_t len) {
   ESP_LOGD(TAG, "%s try=%d cmd=0x%02X src=%02X%02X%02X dst=%02X%02X%02X len=%u", stage, tries, frame.cmd, frame.src[0],
@@ -200,9 +229,10 @@ bool is_valid_final_response(const IoFrame &candidate, const IoFrame &request) {
 
 }  // namespace
 
-bool ExchangeEngine::send_and_receive(const IoFrame &request, IoFrame &response, uint32_t freq) {
+ExchangeOutcome ExchangeEngine::send_and_receive(const IoFrame &request, IoFrame &response, uint32_t freq) {
   this->reset_debug(request.cmd);
   const uint16_t request_preamble = is_start(request) ? LONG_PREAMBLE : (*this->radio_ptr_)->response_preamble();
+  const uint32_t exchange_begin_ms = millis();
 
   for (uint8_t tries = 0; tries < EXCHANGE_RETRY_COUNT; tries++) {
     exchange::OutboundExchangeContext context;
@@ -213,6 +243,16 @@ bool ExchangeEngine::send_and_receive(const IoFrame &request, IoFrame &response,
     context.state = exchange::OutboundExchangeState::TX_REQUEST;
 
     if (tries > 0) {
+      // The retry count is a maximum, not a promise: don't start a try the exchange has no budget
+      // left for. See EXCHANGE_TOTAL_BUDGET_MS -- this is what keeps a failing command from
+      // blocking the ESPHome loop for the full retries x response-window product.
+      if (millis() - exchange_begin_ms >= this->tuning_->exchange_total_budget_ms) {
+        this->record_debug("retry_budget_exhausted", tries, false);
+        ESP_LOGI(TAG, "Exchange budget exhausted after %u tries for cmd=%s(0x%02X) (%" PRIu32 " of %u ms)", tries,
+                 command_name(request.cmd), request.cmd, millis() - exchange_begin_ms,
+                 this->tuning_->exchange_total_budget_ms);
+        break;
+      }
       App.feed_wdt();
       delay(EXCHANGE_RETRY_DELAY_MS);
     }
@@ -229,7 +269,7 @@ bool ExchangeEngine::send_and_receive(const IoFrame &request, IoFrame &response,
       context.state = exchange::OutboundExchangeState::SUCCESS;
       this->record_debug("success_direct", context.try_index, false);
       response = context.rx;
-      return true;
+      return ExchangeOutcome::SUCCESS_WITH_RESPONSE;
     }
 
     if (!this->handle_authentication_(request, freq, context))
@@ -238,16 +278,24 @@ bool ExchangeEngine::send_and_receive(const IoFrame &request, IoFrame &response,
     context.state = exchange::OutboundExchangeState::WAIT_FINAL_RESPONSE;
     this->record_debug(outbound_stage_name(context.state), context.try_index, true);
     auto final_disp = this->wait_for_final_response_(request, context);
-    if (final_disp != decisions::ExchangeFinalResponseDisposition::ACCEPT)
-      continue;
+    if (final_disp != decisions::ExchangeFinalResponseDisposition::ACCEPT) {
+      // The device challenged us and accepted our answer, so it demonstrably received the request.
+      // Not every device closes the exchange with a synchronous reply (see ExchangeOutcome), and
+      // retrying here is actively harmful: the command is already executing, so the two remaining
+      // tries re-send a movement command to a device that is mid-move and, having already acted,
+      // ignores them — which is what turned a working command into a reported failure.
+      context.state = exchange::OutboundExchangeState::SUCCESS;
+      this->record_debug("success_auth_unconfirmed", context.try_index, true);
+      return ExchangeOutcome::SUCCESS_UNCONFIRMED;
+    }
 
     context.state = exchange::OutboundExchangeState::SUCCESS;
     this->record_debug("success_auth", context.try_index, true);
     response = context.rx;
-    return true;
+    return ExchangeOutcome::SUCCESS_WITH_RESPONSE;
   }
 
-  return false;
+  return ExchangeOutcome::FAILED;
 }
 
 // ============================================================================
@@ -279,6 +327,7 @@ decisions::ExchangeFirstResponseDisposition ExchangeEngine::wait_for_first_respo
     }
     if (!parse(packet.data, packet.len, ctx.rx)) {
       this->record_debug("first_parse_fail", ctx.try_index, false);
+      log_unparsable_frame("Unparsable first response", ctx.try_index, packet);
       continue;
     }
     auto disp = decisions::classify_exchange_first_response(request, ctx.rx);
@@ -344,6 +393,7 @@ decisions::ExchangeFinalResponseDisposition ExchangeEngine::wait_for_final_respo
     }
     if (!parse(packet.data, packet.len, ctx.rx)) {
       this->record_debug("final_parse_fail", ctx.try_index, true);
+      log_unparsable_frame("Unparsable final response", ctx.try_index, packet);
       continue;
     }
     if (is_valid_final_response(ctx.rx, request))

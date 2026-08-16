@@ -127,7 +127,7 @@ your device may differ.
 
 | Parameter | Radio | Default | Range / options | What it does |
 |---|---|---|---|---|
-| `sx1262_rx_bandwidth` | SX1262 | `117.3` | `58.6` / `78.2` / `117.3` / `156.2` / `187.2` (kHz) | Receiver bandwidth; wider tolerates post-TX frequency offset. |
+| `sx1262_rx_bandwidth` | SX1262 | `58.6` | `39.0` / `46.9` / `58.6` / `78.2` / `117.3` / `156.2` / `187.2` (kHz) | Receiver bandwidth; narrower rejects more noise. |
 | `sx1262_response_preamble` | SX1262 | `8` | 8–256 B | Preamble length on reply frames, for the peer to lock on. |
 | `sx1262_post_tx_settle_us` | SX1262 | `500` | 0–2000 µs | Settling delay after TX before switching back to RX. |
 | `sx1276_rx_bandwidth` | SX1276 | `41.7` | `20.8` / `41.7` / `62.5` / `83.3` / `125.0` (kHz) | Receiver bandwidth; wider tolerates LO offset, narrower rejects more noise. |
@@ -136,7 +136,7 @@ your device may differ.
 | `sx1262_discovery_hop_slice_ms` | SX1262 | `200` | 50–500 ms | Per-channel dwell while hopping during discovery. |
 | `exchange_start_response_wait_ms` | both | `1000` | 200–4000 ms | How long to listen for a reply to a *start* frame (the first frame of a command). |
 | `exchange_response_wait_ms` | both | `500` | 200–4000 ms | How long to listen for a reply to a continuation frame, and for the post-auth final response. |
-| `lr1121_rx_bandwidth` | LR1121 | `117.3` | `39.0` / `46.9` / `58.6` / `78.2` / `117.3` / `156.2` / `187.2` (kHz) | Receiver bandwidth; wider tolerates post-TX frequency offset. |
+| `lr1121_rx_bandwidth` | LR1121 | `117.3` | `39.0` / `46.9` / `58.6` / `78.2` / `117.3` / `156.2` / `187.2` (kHz) | Receiver bandwidth. Still `117.3` by default — untested on LR1121, but the SX1262 result below suggests trying narrower. |
 | `lr1121_response_preamble` | LR1121 | `8` | 8–256 B | Preamble length on reply frames, for the peer to lock on. |
 | `lr1121_post_tx_settle_us` | LR1121 | `500` | 0–2000 µs | Settling delay after TX before switching back to RX. |
 | `lr1121_discovery_hop_slice_ms` | LR1121 | `200` | 50–500 ms | Per-channel dwell while hopping during discovery. |
@@ -157,16 +157,23 @@ not a tunable.
 
 #### `sx1262_rx_bandwidth`
 
-GFSK receiver bandwidth on the SX1262. Change it when discovery or key-exchange replies fail to
-decode cleanly on an SX1262 board.
+GFSK receiver bandwidth on the SX1262. Change it when frames arrive but fail to decode — the
+`did not parse as a frame` warnings in the log are a direct count of that.
 
-*Observations:* the SX1262's local oscillator needs frequency headroom to recover after a
-TX→RX turnaround. Experiments here found that at `58.6` kHz the demodulator corrupted roughly
-half the bytes of a post-transmit frame (pairing succeeded only about one attempt in five);
-widening to `117.3` kHz removed the problem entirely. Going wider still (`156.2`/`187.2`) can
-help when a device's transmitter drifts more than the controller's own radio, at the cost of
-more noise. `58.6` is close to the narrow default used on the older SX1276 chip (≈41.7 kHz), but
-is marginal on the SX1262's tight turnaround.
+*Observations:* the default was `117.3` for a long time, chosen to tolerate local-oscillator offset
+across the TX→RX turnaround when that turnaround was slow and unmeasured. It is now ~390 µs plus a
+500 µs settle, and that rationale has expired. A 2026-08-15 sweep through every option on real
+hardware found reception improved as the filter narrowed: at `58.6` a shutter that had never once
+obeyed this hub responded, and every device reported status correctly. The default is now `58.6`,
+which also brings the SX1262 into line with the SX1276's long-validated `41.7` on the identical
+waveform.
+
+`39.0` and `46.9` are new, and bracket the SX1276's `41.7` — worth trying if `58.6` still shows
+decode failures.
+
+> **Two of these options were wrong before 2026-08-15.** `156.2` selected 467.0 kHz and `187.2` was
+> not a valid GFSK code at all, so it disabled reception entirely. If you tested those settings on
+> an older build, the result told you nothing about bandwidth. See `SX1262RxBandwidth`.
 
 #### `sx1262_response_preamble`
 
@@ -422,7 +429,7 @@ is a general starting point, not a guarantee — different devices need differen
    LR1121 boards use the `lr1121_*` equivalents instead):
    ```yaml
    sx1262_post_tx_settle_us: 750    # then 1000
-   sx1262_rx_bandwidth: 156.2
+   sx1262_rx_bandwidth: 46.9        # then 39.0 — narrower, not wider; see the section above
    sx1262_response_preamble: 12     # then 16
    ```
 

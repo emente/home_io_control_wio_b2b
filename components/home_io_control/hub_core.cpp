@@ -261,11 +261,11 @@ bool IOHomeControlComponent::transmit_frame_(const IoFrame &frame, uint32_t freq
 }
 
 /// Delegate outbound exchange to ExchangeEngine and manage the busy_ flag.
-bool IOHomeControlComponent::send_and_receive_(const IoFrame &request, IoFrame &response, uint32_t freq) {
+ExchangeOutcome IOHomeControlComponent::send_and_receive_(const IoFrame &request, IoFrame &response, uint32_t freq) {
   this->busy_ = true;
-  bool const ok = this->exchange_engine_.send_and_receive(request, response, freq);
+  ExchangeOutcome const outcome = this->exchange_engine_.send_and_receive(request, response, freq);
   this->busy_ = false;
-  return ok;
+  return outcome;
 }
 
 /// Delegate inbound authentication to ExchangeEngine.
@@ -307,6 +307,10 @@ void IOHomeControlComponent::set_device_dimmable(const std::string &device_id, b
   this->registry_.set_dimmable(device_id, dimmable);
 }
 
+void IOHomeControlComponent::set_device_silent(const std::string &device_id, bool silent) {
+  this->registry_.set_silent(device_id, silent);
+}
+
 // === Main loop ===
 
 void IOHomeControlComponent::loop() {
@@ -328,13 +332,23 @@ void IOHomeControlComponent::loop() {
   if (!this->busy_ && !this->defer_background_poll_())
     this->process_pending_operation_();
 
-  // Frequency hopping — protocol specifies 2.7ms per channel, but ESPHome calls
-  // loop() every ~16-30ms. This is acceptable for a controller: we initiate all
-  // exchanges with a long preamble (1024 bytes ≈ 330ms airtime) so the device has
-  // time to detect us regardless of channel alignment. Precise hopping would only
-  // matter for a passive receiver scanning for unsolicited frames.
+    // Frequency hopping — protocol specifies 2.7ms per channel, but ESPHome calls
+    // loop() every ~16-30ms. This is acceptable for a controller: we initiate all
+    // exchanges with a long preamble (1024 bytes ≈ 330ms airtime) so the device has
+    // time to detect us regardless of channel alignment. Precise hopping would only
+    // matter for a passive receiver scanning for unsolicited frames.
+    // Diagnostics build flag: park the receiver on one channel instead of hopping. A hopping monitor
+    // is on any given channel roughly a third of the time, so "the capture never shows frame X" is
+    // weak evidence — locking to the channel under study makes an absence mean something. Define it
+    // to the channel in Hz, e.g. -DIOHOME_LOCK_CHANNEL_HZ=868950000 for CH2, the command channel.
+    // Only useful for a passive monitor: a hub that cannot hop will miss replies on other channels.
+#ifdef IOHOME_LOCK_CHANNEL_HZ
+  if (!this->busy_ && this->radio_ != nullptr && this->radio_->get_current_freq() != IOHOME_LOCK_CHANNEL_HZ)
+    this->radio_->change_frequency(IOHOME_LOCK_CHANNEL_HZ);
+#else
   if (!this->busy_)
     this->exchange_engine_.maybe_hop();
+#endif
 
   // Periodic status polling
   if (!this->busy_) {

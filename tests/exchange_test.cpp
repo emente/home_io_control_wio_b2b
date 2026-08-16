@@ -141,7 +141,7 @@ TEST(Exchange, SendAndReceive_DirectSuccess) {
   radio.queue_rx(pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   // Direct response should succeed without authentication
   EXPECT_TRUE(ok) << "direct status response should succeed without challenge";
@@ -166,7 +166,7 @@ TEST(Exchange, SendAndReceive_AllTransmitFails) {
   create_execute_position(request, comp.node_id_, test::DST_ID, false, 100);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   // All transmit attempts fail — should exhaust retries and return false
   EXPECT_FALSE(ok) << "if every transmit attempt fails, exchange should return false";
@@ -204,7 +204,7 @@ TEST(Exchange, SendAndReceive_FirstResponseIgnoredThenDirectSuccess) {
   radio.queue_rx(pkt2);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   // Direct response should succeed without authentication
   EXPECT_TRUE(ok) << "direct status response should succeed without challenge";
@@ -244,7 +244,7 @@ TEST(Exchange, SendAndReceive_ChallengeSuccess) {
   radio.queue_rx(final_pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   EXPECT_TRUE(ok);
   EXPECT_EQ(response.cmd, CMD_PRIVATE_RESP);
@@ -272,7 +272,7 @@ TEST(Exchange, SendAndReceive_DirectErrorResponseIsAccepted) {
   radio.queue_rx(pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   EXPECT_TRUE(ok) << "transport layer should surface explicit device refusals to the caller";
   EXPECT_EQ(response.cmd, CMD_ERROR_RESP);
@@ -309,7 +309,7 @@ TEST(Exchange, SendAndReceive_FinalErrorResponseAfterChallengeIsAccepted) {
   radio.queue_rx(final_pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   EXPECT_TRUE(ok) << "authenticated exchanges should also surface explicit device refusals";
   EXPECT_EQ(response.cmd, CMD_ERROR_RESP);
@@ -346,7 +346,7 @@ TEST(Exchange, SendAndReceive_AuthTransmitFailure) {
   radio.queue_tx_result(false);  // try 3 request fails
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   // All transmit attempts fail — should exhaust retries and return false
   EXPECT_FALSE(ok) << "if every transmit attempt fails, exchange should return false";
@@ -355,7 +355,7 @@ TEST(Exchange, SendAndReceive_AuthTransmitFailure) {
       << "should perform EXCHANGE_RETRY_COUNT request transmits plus one auth response attempt before giving up";
 }
 
-TEST(Exchange, SendAndReceive_FinalResponseTimeout) {
+TEST(Exchange, SendAndReceive_MissingFinalResponseIsUnconfirmedSuccessNotFailure) {
   TestableComponent comp;
   comp.initialized_ = true;
   MockRadio radio;
@@ -383,10 +383,19 @@ TEST(Exchange, SendAndReceive_FinalResponseTimeout) {
   radio.queue_tx_result(true);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  const ExchangeOutcome outcome = comp.send_and_receive_(request, response, FREQ_CH2);
 
-  // No final response received within auth wait window
-  EXPECT_FALSE(ok) << "final response timeout after successful challenge should cause exchange failure";
+  // A challenge we answered proves the device received and accepted the request, so this is not a
+  // failure — it is an acceptance we could not confirm. Some devices never close the exchange at
+  // all: a Somfy RS100's next transmission after our 0x3D was measured at 3.4-12 s, or never,
+  // against a 500 ms window, while a Somfy awning acks synchronously with 0x04. See
+  // ExchangeOutcome.
+  EXPECT_EQ(outcome, ExchangeOutcome::SUCCESS_UNCONFIRMED)
+      << "an authenticated request with no final response is accepted, not failed";
+  EXPECT_EQ(response.cmd, 0) << "there was no response frame, so none should be handed back";
+  // The retry is the part that actively hurt: the command is already executing, so re-sending it
+  // twice more only reaches a device that has acted and now ignores duplicates.
+  EXPECT_EQ(radio.get_send_count(), 2) << "expected exactly the request plus the auth response, with no retries";
 }
 
 // ============================================================================
@@ -676,7 +685,7 @@ TEST(Exchange, SendAndReceive_ChallengeResponseCarriesCorrectHmac) {
   radio.queue_rx(final_pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
   ASSERT_TRUE(ok) << "challenge+response exchange should succeed";
 
   // TX 0 = initial request, TX 1 = 0x3D auth response.
@@ -715,7 +724,7 @@ TEST(Exchange, SendAndReceive_RetryExhaustion_NoResponse) {
   create_execute_position(request, comp.node_id_, test::DST_ID, false, 50);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   EXPECT_FALSE(ok) << "exchange with no device response should fail after exhausting all retries";
   EXPECT_EQ(radio.get_send_count(), EXCHANGE_RETRY_COUNT)
@@ -767,7 +776,7 @@ TEST(Exchange, SendAndReceive_UnrelatedFrameIgnoredDuringFinalWait) {
   radio.queue_rx(final_pkt);
 
   IoFrame response{};
-  bool ok = comp.send_and_receive_(request, response, FREQ_CH2);
+  bool ok = comp.send_and_receive_(request, response, FREQ_CH2) == ExchangeOutcome::SUCCESS_WITH_RESPONSE;
 
   EXPECT_TRUE(ok) << "unrelated frames in the auth-wait window must be ignored; exchange should still succeed";
   EXPECT_EQ(response.cmd, CMD_PRIVATE_RESP) << "final accepted response must be the legitimate device reply";
@@ -1122,12 +1131,107 @@ TEST(Exchange, ContinuationFrameBudgetsTheShorterResponseWindow) {
   expect_window_near(radio.wait_timeouts().front(), 250);
 }
 
-TEST(Exchange, StartResponseWindowDefaultsLongerThanContinuation) {
-  // The regression this guards: a start frame's budget must never fall back below the
-  // continuation budget, whatever the numbers are changed to.
+TEST(Exchange, ResponseWindowDefaultsComeFromTheProtocolConstants) {
+  // No ordering constraint between the two windows is asserted on purpose. An earlier version of
+  // this test required the start window to be the longer of the two, on the theory that a
+  // just-woken device is the slowest to answer. Measurement disproved that: the device replies
+  // within milliseconds of the carrier dropping or not at all (see RESPONSE_START_WAIT_MS), so
+  // both windows only need to clear a few tens of milliseconds and their relative order carries
+  // no meaning worth pinning.
   TuningConfig tuning;
-  EXPECT_GT(tuning.exchange_start_response_wait_ms, tuning.exchange_response_wait_ms)
-      << "a start frame wakes a sleeping device and must get the longer window";
   EXPECT_EQ(tuning.exchange_start_response_wait_ms, RESPONSE_START_WAIT_MS);
   EXPECT_EQ(tuning.exchange_response_wait_ms, RESPONSE_WAIT_MS);
+  EXPECT_EQ(tuning.exchange_total_budget_ms, EXCHANGE_TOTAL_BUDGET_MS);
+}
+
+// ============================================================================
+// Retry budget: EXCHANGE_RETRY_COUNT is a maximum, not a promise. Three tries at a window sized
+// for the slowest device on the network blocks the ESPHome loop past its own warning threshold
+// (ADR 0013), so a try only starts if the exchange still has budget. See EXCHANGE_TOTAL_BUDGET_MS.
+// ============================================================================
+
+TEST(Exchange, RetriesStopOnceTheTotalBudgetIsSpent) {
+  MockRadio radio;
+  radio.set_exchange_wait_slice_ms(1000000);  // don't let per-channel slicing mask the window
+  RadioDriver *radio_ptr = &radio;
+
+  TuningConfig tuning;
+  // One try fits; a second would overrun. The host clock stubs advance millis() per call, so the
+  // budget is expressed relative to the window rather than in real milliseconds.
+  tuning.exchange_start_response_wait_ms = 400;
+  tuning.exchange_total_budget_ms = 200;
+  ExchangeEngine engine(&radio_ptr, test::OWN_ID, test::TEST_SYSTEM_KEY, &tuning);
+
+  IoFrame request{};
+  create_execute_position(request, test::OWN_ID, test::DST_ID, true, 100);
+  IoFrame response{};
+  engine.send_and_receive(request, response, FREQ_CH2);  // nothing queued -> every try fails
+
+  EXPECT_EQ(radio.get_send_count(), 1) << "a second try must not start once the budget is spent";
+  EXPECT_STREQ(engine.get_debug().stage, "retry_budget_exhausted");
+}
+
+TEST(Exchange, GenerousBudgetStillAllowsEveryRetry) {
+  MockRadio radio;
+  radio.set_exchange_wait_slice_ms(1000000);
+  RadioDriver *radio_ptr = &radio;
+
+  TuningConfig tuning;
+  tuning.exchange_start_response_wait_ms = 200;
+  tuning.exchange_total_budget_ms = 60000;  // far more than the stub clock can consume
+  ExchangeEngine engine(&radio_ptr, test::OWN_ID, test::TEST_SYSTEM_KEY, &tuning);
+
+  IoFrame request{};
+  create_execute_position(request, test::OWN_ID, test::DST_ID, true, 100);
+  IoFrame response{};
+  engine.send_and_receive(request, response, FREQ_CH2);
+
+  EXPECT_EQ(radio.get_send_count(), EXCHANGE_RETRY_COUNT) << "with budget to spare the retry count is unchanged";
+}
+
+TEST(Exchange, ExecuteUsesUserDefaultAceiPriority) {
+  // A real 2W hub (Velux KIG300, 2026-08-14 capture) sends ACEI 0x63 -- level 3, user_default.
+  // Claiming a higher priority than the reference controller is what this hub used to do.
+  IoFrame f{};
+  ASSERT_TRUE(create_execute_position(f, test::OWN_ID, test::DST_ID, true, 100));
+  EXPECT_EQ(f.data[1], 0x63);
+  EXPECT_EQ((f.data[1] & ACEI_LEVEL_MASK) >> ACEI_LEVEL_SHIFT, ACEI_LEVEL_USER_DEFAULT);
+}
+
+// ============================================================================
+// A failure report has to say which kind of failure it was. Every wait_for_packet() clears the
+// radio's capture before listening, so recording "the latest" meant the report always described
+// the final timed-out wait — making cap_valid=0 tautological and hiding whether the radio heard
+// nothing or heard something this layer discarded.
+// ============================================================================
+
+TEST(Exchange, FailureReportKeepsTheInformativeCaptureNotTheLastEmptyOne) {
+  MockRadio radio;
+  radio.set_emulate_capture_lifecycle(true);
+  radio.set_exchange_wait_slice_ms(1000000);
+  RadioDriver *radio_ptr = &radio;
+
+  TuningConfig tuning;
+  ExchangeEngine engine(&radio_ptr, test::OWN_ID, test::TEST_SYSTEM_KEY, &tuning);
+
+  // One frame arrives and is correctly ignored (wrong endpoints), then nothing for the rest of the
+  // exchange. The radio demonstrably heard something.
+  const uint8_t other_device[3] = {0x55, 0x66, 0x77};
+  IoFrame unrelated = build_status_response(other_device, test::OWN_ID);
+  uint8_t raw[64];
+  uint8_t raw_len = serialize(unrelated, raw, sizeof(raw));
+  RadioRxPacket pkt{};
+  pkt.len = raw_len;
+  memcpy(pkt.data, raw, raw_len);
+  pkt.freq_hz = FREQ_CH2;
+  radio.queue_rx(pkt);
+
+  IoFrame request{};
+  create_execute_position(request, test::OWN_ID, test::DST_ID, true, 100);
+  IoFrame response{};
+  ASSERT_EQ(engine.send_and_receive(request, response, FREQ_CH2), ExchangeOutcome::FAILED);
+
+  EXPECT_TRUE(engine.get_debug().capture_valid)
+      << "the exchange received a frame, so its report must not claim the radio heard nothing";
+  EXPECT_EQ(engine.get_debug().capture_freq_hz, FREQ_CH2) << "and it should describe the frame actually heard";
 }
