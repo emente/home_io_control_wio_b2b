@@ -34,13 +34,13 @@ namespace home_io_control {
 /// frames publishes a known-plaintext/known-ciphertext pair for that block cipher under the
 /// system key, so they get the same treatment as literal key material.
 ///
-/// CMD_ONEWAY_ADD_CONTROLLER (0x30) is masked even though this codebase has no 1W key-adoption
-/// feature and never builds or parses this command itself: the radio receives every frame that
-/// matches the IO-Homecontrol sync word regardless of destination address (see
-/// log_component_capture()'s doc comment), so a neighboring installation's 1W device performing
-/// its key-copy gesture is overheard and logged like any other traffic. That broadcast hands its
-/// network's wrapped system key to whoever is listening, so the raw command byte alone is enough
-/// to know the payload must be masked even without decoding it.
+/// CMD_ONEWAY_ADD_CONTROLLER (0x30) is the 1W equivalent of CMD_KEY_TRANSFER. Its payload is not
+/// literally the key — it is the key wrapped with the public TRANSFER_KEY — but the unwrap needs
+/// nothing secret: the IV derives only from the sender's node address, which is plaintext in the
+/// same frame's header. So publishing those bytes is equivalent to publishing the key, and they
+/// are masked for the same reason 0x32 is. The one deliberate exception is the adoption report in
+/// hub_oneway_key_adoption.cpp, which formats the *decoded* key directly rather than going
+/// through any frame-rendering path.
 /// @param cmd Frame command byte.
 /// @return true if the payload of a frame with this command must be masked.
 inline bool command_carries_key_material(uint8_t cmd) {

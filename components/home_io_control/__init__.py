@@ -12,6 +12,7 @@ import urllib.request
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
+import esphome.final_validate as fv
 from esphome import pins
 from esphome.components import spi
 # Aliased: this package has its own switch.py/button.py submodules, so a plain `from
@@ -24,13 +25,16 @@ from esphome.components import spi
 # our own platform files instead of the real ESPHome components.
 from esphome.components import button as button_component
 from esphome.components import switch as switch_component
+from esphome.components import text_sensor as text_sensor_component
 from esphome.const import (
     CONF_ID,
     CONF_INVERTED,
     CONF_NAME,
+    CONF_PLATFORM,
     CONF_REF,
     CONF_SOURCE,
     ENTITY_CATEGORY_CONFIG,
+    ENTITY_CATEGORY_DIAGNOSTIC,
 )
 from esphome.core import CORE, ID
 from esphome.helpers import write_file_if_changed
@@ -61,6 +65,28 @@ CONF_FEM_PA_PIN = "fem_pa_pin"
 CONF_TCXO_VOLTAGE = "tcxo_voltage"
 CONF_EXPOSED_SENDERS = "exposed_senders"
 CONF_ACCEPT_FOREIGN_PAIRING = "accept_foreign_pairing"
+CONF_RECOVER_ONEWAY_KEY = "recover_oneway_key"
+CONF_ONEWAY_CONTROLLERS = "oneway_controllers"
+# Internal marker recording that an identity's node_id was derived rather than configured, so
+# validation errors and the boot log can say which it was.
+CONF_NODE_ID_DERIVED = "_node_id_derived"
+CONF_MANUFACTURER = "manufacturer"
+# Same YAML key as platform_common.py's CONF_DEVICE_TYPE, spelled here rather than imported:
+# platform_common imports from this module, so the dependency cannot run the other way.
+CONF_IO_DEVICE_TYPE = "io_device_type"
+CONF_INITIAL_SEQUENCE = "initial_sequence"
+CONF_COMMANDS = "commands"
+# The build flag for this identity's "Enroll 1W Controller" button. Presence/absence is the whole
+# gate -- adding or removing this line and reflashing is the enrollment feature's entire
+# lifecycle, same shape as accept_foreign_pairing/recover_oneway_key.
+CONF_ENROLLMENT = "enrollment"
+# Injected at schema time, never user-supplied: the generated buttons' IDs and the identity's
+# diagnostic sensor ID (ADR 0009).
+CONF_BUTTON_IDS = "button_ids"
+CONF_LAST_COMMAND_SENSOR_ID = "last_command_sensor_id"
+# Only present when enrollment: true (ADR 0009 -- an ID created late in to_code() is silently
+# dropped at runtime).
+CONF_ENROLL_BUTTON_ID = "_enroll_button_id"
 CONF_DIAGNOSTIC_PROBES = "diagnostic_probes"
 CONF_LR1121_FIRMWARE_UPDATE = "lr1121_firmware_update"
 CONF_LR1121_BOOTLOADER = "bootloader"
@@ -74,6 +100,9 @@ MIN_STATUS_POLL_INTERVAL_MS = 500
 # entity created only in to_code() would silently drop; see tuning.py::_inject_tuning_companion_ids
 # for the fuller rationale).
 CONF_ACCEPT_FOREIGN_PAIRING_SWITCH_ID = "_accept_foreign_pairing_switch_id"
+# Internal config key for the "Recover 1W Controller Key" companion switch ID (injected by
+# post-validator; same rationale as CONF_ACCEPT_FOREIGN_PAIRING_SWITCH_ID above).
+CONF_RECOVER_ONEWAY_KEY_SWITCH_ID = "_recover_oneway_key_switch_id"
 # Internal config key for the "Flash LR1121 Radio Firmware" companion button ID (injected by
 # post-validator; same rationale as CONF_ACCEPT_FOREIGN_PAIRING_SWITCH_ID above).
 CONF_LR1121_FIRMWARE_UPDATE_BUTTON_ID = "_lr1121_firmware_update_button_id"
@@ -86,7 +115,7 @@ home_io_control_ns = cg.esphome_ns.namespace("home_io_control")
 IOHomeControlComponent = home_io_control_ns.class_(
     "IOHomeControlComponent", cg.Component, spi.SPIDevice
 )
-# Hub-level "Accept Foreign Pairing (Key Extraction)" switch (hub_key_extraction.cpp /
+# Hub-level "Recover System Key" switch (key extraction, hub_key_extraction.cpp /
 # platform_accept_foreign_pairing_switch.h). Deliberately NOT exposed via a `switch:` platform
 # entry: earlier revisions dispatched on the presence/absence of `io_device_id` within switch.py,
 # which meant an ordinary device-bound switch missing `io_device_id` by mistake would silently
@@ -96,6 +125,14 @@ IOHomeControlComponent = home_io_control_ns.class_(
 IOHomeAcceptForeignPairingSwitch = home_io_control_ns.class_(
     "IOHomeAcceptForeignPairingSwitch", switch_component.Switch, cg.Component
 )
+# Hub-level "Recover 1W Controller Key" switch (key adoption, hub_oneway_key_adoption.cpp /
+# platform_recover_oneway_key_switch.h). Same dynamically-created, hub-bound shape as the switch
+# above, and gated behind its own boolean for the same reason: there is no shared schema for a
+# device-bound switch to be confused under. Independent of accept_foreign_pairing — the two arm
+# different listeners (2W pairing responder vs. 1W add-controller broadcast).
+IOHomeRecoverOneWayKeySwitch = home_io_control_ns.class_(
+    "IOHomeRecoverOneWayKeySwitch", switch_component.Switch, cg.Component
+)
 # Hub-level "Flash LR1121 Radio Firmware" button (hub_lr1121_firmware_update.cpp /
 # platform_lr1121_firmware_update_button.h). Same "created dynamically from a home_io_control:
 # sub-block, not a device-bound platform entry" shape as the switch above — there is no
@@ -103,6 +140,35 @@ IOHomeAcceptForeignPairingSwitch = home_io_control_ns.class_(
 IOHomeLr1121FirmwareUpdateButton = home_io_control_ns.class_(
     "IOHomeLr1121FirmwareUpdateButton", button_component.Button, cg.Component
 )
+# Generated 1W command buttons and their per-identity diagnostic sensor
+# (platform_oneway_command_button.h / platform_oneway_last_command_text_sensor.h). Created from
+# the `oneway_controllers:` block for the same reason as the entities above: a `button:` entry
+# that dispatched on the presence of a `commands:` key would let a mistyped key turn one kind of
+# button into another, which is precisely the failure the key-extraction switch was moved here to
+# avoid.
+IOHomeOneWayCommandButton = home_io_control_ns.class_(
+    "IOHomeOneWayCommandButton", button_component.Button, cg.Component
+)
+IOHomeOneWayLastCommandTextSensor = home_io_control_ns.class_(
+    "IOHomeOneWayLastCommandTextSensor", text_sensor_component.TextSensor, cg.Component
+)
+# Generated 1W enrollment button (platform_oneway_enroll_button.h), one per identity with
+# `enrollment: true`. Same "created from the hub block, never a `button:` entry" reasoning as
+# IOHomeOneWayCommandButton above -- see that class's comment.
+IOHomeOneWayEnrollButton = home_io_control_ns.class_(
+    "IOHomeOneWayEnrollButton", button_component.Button, cg.Component
+)
+OneWayButtonAction = home_io_control_ns.enum("OneWayButtonAction", is_class=True)
+# Command names a user may list, mapped to the C++ enum. OPEN and CLOSE are positions on the
+# wire, not distinct opcodes -- encode_oneway_action() (oneway_controller.h) is where that
+# resolves, so this table stays a plain name->enum mapping.
+ONEWAY_COMMANDS = {
+    "open": OneWayButtonAction.OPEN,
+    "close": OneWayButtonAction.CLOSE,
+    "stop": OneWayButtonAction.STOP,
+    "vent": OneWayButtonAction.VENT,
+    "favorite": OneWayButtonAction.FAVORITE,
+}
 # Hub-level "Allow LR1121 Bootloader Rewrite (Irreversible)" arming switch
 # (hub_lr1121_firmware_update.cpp / platform_lr1121_bootloader_rewrite_switch.h). Same
 # dynamically-created, hub-bound shape as the two entities above; created only when
@@ -121,6 +187,19 @@ def _inject_accept_foreign_pairing_switch_id(config):
         f"{base}_accept_foreign_pairing_switch",
         is_declaration=True,
         type=IOHomeAcceptForeignPairingSwitch,
+    )
+    return config
+
+
+def _inject_recover_oneway_key_switch_id(config):
+    if not config[CONF_RECOVER_ONEWAY_KEY]:
+        return config
+    parent_id = config[CONF_ID]
+    base = parent_id.id if parent_id.id else "home_io_control"
+    config[CONF_RECOVER_ONEWAY_KEY_SWITCH_ID] = ID(
+        f"{base}_recover_oneway_key_switch",
+        is_declaration=True,
+        type=IOHomeRecoverOneWayKeySwitch,
     )
     return config
 
@@ -305,6 +384,43 @@ DEVICE_TYPE_OPTIONS = {
 }
 
 
+# Mirrors proto_constants.h's MANUFACTURER_* constants (IO-Homecontrol alliance-assigned IDs) --
+# lowercased versions of those constant names, so a name typo'd here is easy to spot against the
+# C++ source. Not every possible byte has a name (MANUFACTURER_ID_MAX=12); an identity whose real
+# manufacturer isn't in this table still works via the raw-integer escape hatch every caller of
+# _resolve_named_or_raw_token() below shares.
+MANUFACTURER_OPTIONS = {
+    "velux": 0x01,
+    "somfy": 0x02,
+    "honeywell": 0x03,
+    "hormann": 0x04,
+    "assa_abloy": 0x05,
+    "niko": 0x06,
+    "window_master": 0x07,
+    "renson": 0x08,
+    "ciat": 0x09,
+    "secuyou": 0x0A,
+    "overkiz": 0x0B,
+    "atlantic_group": 0x0C,
+}
+
+
+def _resolve_named_or_raw_token(token, options, max_value=0xFF):
+    """Resolve a lowercase, stripped token (a name from `options`, or a raw int/hex string) to
+    an integer 0-`max_value`.
+
+    Shared "named value, else raw integer" acceptance rule: validate_device_type()/
+    validate_linked_remote_entry() (DEVICE_TYPE_OPTIONS) and validate_manufacturer()
+    (MANUFACTURER_OPTIONS) are the same shape of small, protocol-defined enum with an escape
+    hatch for values this project hasn't named yet, so the lookup lives here once.
+    @raises ValueError if token is neither a known name nor a parseable integer.
+    @raises cv.Invalid if token parses as an integer but is out of range.
+    """
+    if token in options:
+        return options[token]
+    return cv.int_range(min=0, max=max_value)(int(token, 0))
+
+
 def _resolve_device_type_token(token):
     """Resolve a lowercase, stripped device-type token (name or raw int/hex string) to 0-255.
 
@@ -315,9 +431,7 @@ def _resolve_device_type_token(token):
     @raises ValueError if token is neither a known name nor a parseable integer.
     @raises cv.Invalid if token parses as an integer but is out of range 0-255.
     """
-    if token in DEVICE_TYPE_OPTIONS:
-        return DEVICE_TYPE_OPTIONS[token]
-    return cv.int_range(min=0, max=0xFF)(int(token, 0))
+    return _resolve_named_or_raw_token(token, DEVICE_TYPE_OPTIONS)
 
 
 def validate_device_type(value):
@@ -337,6 +451,28 @@ def validate_device_type(value):
     raise cv.Invalid(
         "Device type must be a known name or an integer in the range 0..255"
     )
+
+
+def validate_manufacturer(value):
+    """Validate manufacturer as a named string (MANUFACTURER_OPTIONS) or integer 0-255.
+
+    Mirrors validate_device_type() exactly (same "name, else raw integer" shape via
+    _resolve_named_or_raw_token()) — a manufacturer ID is the same kind of small,
+    protocol-defined enum, it just has no linked_remotes-style second caller.
+    """
+    if isinstance(value, int):
+        return cv.int_range(min=0, max=0xFF)(value)
+
+    if isinstance(value, str):
+        normalized = cv.string_strict(value).strip().lower()
+        try:
+            return _resolve_named_or_raw_token(normalized, MANUFACTURER_OPTIONS)
+        except ValueError as err:
+            raise cv.Invalid(
+                "manufacturer must be a known name or an integer in the range 0..255 (for example 0x02)"
+            ) from err
+
+    raise cv.Invalid("manufacturer must be a known name or an integer in the range 0..255")
 
 
 def device_type_expression(value):
@@ -368,6 +504,309 @@ def validate_system_key(value):
     except ValueError:
         raise cv.Invalid("System key must be valid hexadecimal")
     return value
+
+
+# A 1W controller identity. 1W is class-addressed — a command goes to a device *class*, never to
+# a node — so there is no `io_device_id` here and none on the entities that will reference this
+# handle. What distinguishes one 1W control surface from another is the controller doing the
+# transmitting: its address, its key, and the class it speaks to. See ADR 0027 and
+# oneway_controller.h.
+#
+# A newly-required key here also needs a matching field in the `oneway_controllers:` block
+# build_oneway_adoption_report() (hub_internal.h) hand-emits for paste-and-reflash (ADR 0018).
+# `make yaml-emitter-sync` (scripts/check-yaml-emitters.py) catches drift between the two
+# statically.
+ONEWAY_CONTROLLER_SCHEMA = cv.Schema(
+    {
+        cv.Required(CONF_ID): cv.string_strict,
+        # Optional and derived when omitted — see derive_oneway_node_id() for why asking the user
+        # for one is an unanswerable question.
+        cv.Optional(CONF_NODE_ID): validate_node_id,
+        # Optional and inherits the hub's key when omitted. cv.sensitive matches the hub's own
+        # system_key handling (see the main schema below) so the value is redacted from ESPHome's
+        # config dump; without it a per-identity key would leak into logs verbatim.
+        cv.Optional(CONF_SYSTEM_KEY): cv.sensitive(validate_system_key),
+        # No default here -- see _validate_oneway_controllers() for why: it must become required,
+        # not silently 0, whenever enrollment: true actually puts this byte on air. Named or raw
+        # hex, same "known name, else escape hatch" shape as io_device_type below.
+        cv.Optional(CONF_MANUFACTURER): validate_manufacturer,
+        cv.Required(CONF_IO_DEVICE_TYPE): validate_device_type,
+        # Seeds this identity's rolling counter on first use. This is the escape hatch for a
+        # device that has stopped accepting commands because its stored counter ran ahead of
+        # ours: bump this and reflash. Devices accept a forward jump only within a window (~1000
+        # in the one documented receiver implementation), so a value that is too far ahead fails
+        # exactly like one that is too far behind, and just as silently — move it in small steps.
+        cv.Optional(CONF_INITIAL_SEQUENCE, default=0): cv.int_range(min=0, max=0xFFFF),
+        # Which command buttons to generate. Validated against the known set rather than taken
+        # as free text: a typo would otherwise produce a silently missing button, and 1W gives no
+        # runtime signal that would ever reveal one.
+        cv.Optional(CONF_COMMANDS, default=[]): cv.ensure_list(
+            cv.one_of(*ONEWAY_COMMANDS, lower=True)
+        ),
+        # The build flag for this identity's "Enroll 1W Controller" button. See CONF_ENROLLMENT's
+        # own comment for the lifecycle this presence/absence gates.
+        cv.Optional(CONF_ENROLLMENT, default=False): cv.boolean,
+    }
+)
+
+
+def derive_oneway_node_id(hub_node_id, identity_id):
+    """Derive a stable 3-byte 1W source address from the hub's node_id and an identity handle.
+
+    `node_id` is optional on a `oneway_controllers:` entry because asking a user to invent a
+    3-byte radio address is an unanswerable question — nothing tells them which addresses are
+    safe, and colliding with a real remote in range silently desyncs both transmitters' rolling
+    sequence counters. Deriving one removes the decision while leaving an explicit value
+    available to anyone who needs it.
+
+    The derivation is done here, at schema time, rather than at runtime on the device, so that a
+    derived address participates in the same collision checks as a configured one and a clash
+    fails the build instead of surfacing as a device that silently ignores commands. It is a
+    pure function of (hub node_id, identity id), so it is stable across builds and reproducible
+    from the YAML alone.
+
+    Uses BLAKE2b rather than Python's hash(), which is salted per-process and would produce a
+    different address on every compile.
+    """
+    digest = hashlib.blake2b(
+        f"{hub_node_id}:{identity_id}".encode(), digest_size=3
+    ).digest()
+    return f"{digest[0]:02X}{digest[1]:02X}{digest[2]:02X}"
+
+
+def _hex_byte_array(hex_string):
+    """Render a hex string as a C++ brace-initialiser list of bytes."""
+    values = ", ".join(
+        f"0x{hex_string[i : i + 2]}" for i in range(0, len(hex_string), 2)
+    )
+    return f"{{{values}}}"
+
+
+def oneway_controller_expression(identity, hub_node_id):
+    """Generate the C++ OneWayControllerIdentity initialiser for one configured identity.
+
+    Emitted as a designated initialiser so the generated code reads like the YAML that produced
+    it, and so adding a field to the struct cannot silently shift an existing value.
+    """
+    derived = identity.get(CONF_NODE_ID_DERIVED, False)
+    fields = ", ".join(
+        [
+            f'.id = "{identity[CONF_ID]}"',
+            f".node_id = {_hex_byte_array(identity[CONF_NODE_ID])}",
+            f".system_key = {_hex_byte_array(identity[CONF_SYSTEM_KEY])}",
+            f".manufacturer = 0x{identity[CONF_MANUFACTURER]:02X}",
+            f".io_device_type = static_cast<esphome::home_io_control::DeviceType>"
+            f"(0x{identity[CONF_IO_DEVICE_TYPE]:02X})",
+            f".initial_sequence = 0x{identity[CONF_INITIAL_SEQUENCE]:04X}",
+            f".node_id_derived = {'true' if derived else 'false'}",
+        ]
+    )
+    if derived:
+        _LOGGER.info(
+            "home_io_control: oneway_controllers '%s' node_id derived from hub %s -> %s",
+            identity[CONF_ID],
+            hub_node_id,
+            identity[CONF_NODE_ID],
+        )
+    return cg.RawExpression(
+        f"esphome::home_io_control::OneWayControllerIdentity{{{fields}}}"
+    )
+
+
+def _reject_node_id_collision(identity_id, node_id, seen_node_ids, derived):
+    """Raise if `node_id` is already claimed in `seen_node_ids`; no-op otherwise.
+
+    Shared between _validate_oneway_controllers() (collisions against the hub's own node_id and
+    other oneway_controllers entries) and _final_validate_oneway_controller_addresses()
+    (collisions against `linked_remotes:`/`io_device_id:` declared elsewhere in the same YAML),
+    so both raise identically-worded errors regardless of which side of the config the other
+    claimant lives on.
+    """
+    if node_id not in seen_node_ids:
+        return
+    owner = seen_node_ids[node_id]
+    hint = (
+        " (this address was derived; set node_id: explicitly to resolve the clash)"
+        if derived
+        else ""
+    )
+    raise cv.Invalid(
+        f"oneway_controllers id '{identity_id}' uses node_id {node_id}, which collides with "
+        f"{owner}{hint}. Two transmitters sharing an address share a rolling sequence "
+        f"counter, which silently desyncs both."
+    )
+
+
+def _validate_oneway_controllers(config):
+    """Resolve per-identity defaults and reject address/handle collisions at compile time.
+
+    Runs as a post-validator on the whole hub config because every rule here needs the hub's own
+    `node_id`/`system_key`, which a per-entry validator cannot see.
+
+    Only checks addresses visible within `home_io_control:` itself (its own `node_id` and every
+    configured `oneway_controllers` entry) — see _final_validate_oneway_controller_addresses()
+    below for the matching check against `linked_remotes:`/`io_device_id:` declared elsewhere in
+    the same YAML, which needs the full cross-component config and so cannot run here. Even
+    together the two cannot see a real remote the user has never mentioned to this config at all;
+    see derive_oneway_node_id()'s own docstring for why that residual risk cannot be validated
+    away.
+    """
+    identities = config.get(CONF_ONEWAY_CONTROLLERS, [])
+    if not identities:
+        return config
+
+    hub_node_id = config[CONF_NODE_ID]
+    seen_ids = set()
+    # Maps resolved address -> the human-readable owner, so a collision message can name both
+    # sides rather than just reporting that "an" address is taken.
+    seen_node_ids = {hub_node_id: "the hub's own node_id"}
+
+    for identity in identities:
+        identity_id = identity[CONF_ID]
+        if identity_id in seen_ids:
+            raise cv.Invalid(
+                f"Duplicate oneway_controllers id '{identity_id}' — each identity needs its own handle"
+            )
+        seen_ids.add(identity_id)
+
+        if CONF_NODE_ID not in identity:
+            identity[CONF_NODE_ID] = derive_oneway_node_id(hub_node_id, identity_id)
+            identity[CONF_NODE_ID_DERIVED] = True
+
+        node_id = identity[CONF_NODE_ID]
+        _reject_node_id_collision(identity_id, node_id, seen_node_ids, identity.get(CONF_NODE_ID_DERIVED))
+        seen_node_ids[node_id] = f"oneway_controllers id '{identity_id}'"
+
+        # A per-identity key is optional so that identities on the hub's own network need not
+        # repeat it; an adopted foreign network's key is what makes the override necessary.
+        if CONF_SYSTEM_KEY not in identity:
+            identity[CONF_SYSTEM_KEY] = config[CONF_SYSTEM_KEY]
+
+        # manufacturer becomes required, not silently 0, whenever enrollment: true actually puts
+        # this byte on the air in a CMD_ONEWAY_ADD_CONTROLLER frame -- 1W gives no error a wrong
+        # value would ever surface as, so the mistake has to be caught here instead. Everywhere
+        # else it is genuinely unused today, so defaulting to 0 there is harmless.
+        if identity[CONF_ENROLLMENT] and CONF_MANUFACTURER not in identity:
+            raise cv.Invalid(
+                f"oneway_controllers id '{identity_id}' has enrollment: true but no manufacturer: "
+                "set. Find the value from a key-adoption report for this network (the 'Recover "
+                "1W Controller Key' switch prints it), or from the device's own documentation."
+            )
+        if CONF_MANUFACTURER not in identity:
+            identity[CONF_MANUFACTURER] = 0
+
+        # Entity IDs are declared here, at validation time, not in to_code(): an ID created late
+        # is silently dropped at runtime (ADR 0009). The `<identity_id>_<command>` shape is a
+        # documented contract, not an implementation detail -- users compose `time_based` covers
+        # against these IDs and cannot do that against IDs they can't predict.
+        identity[CONF_BUTTON_IDS] = {
+            command: ID(
+                f"{identity_id}_{command}",
+                is_declaration=True,
+                type=IOHomeOneWayCommandButton,
+            )
+            for command in identity[CONF_COMMANDS]
+        }
+        identity[CONF_LAST_COMMAND_SENSOR_ID] = ID(
+            f"{identity_id}_last_1w_command",
+            is_declaration=True,
+            type=IOHomeOneWayLastCommandTextSensor,
+        )
+        if identity[CONF_ENROLLMENT]:
+            identity[CONF_ENROLL_BUTTON_ID] = ID(
+                f"{identity_id}_enroll",
+                is_declaration=True,
+                type=IOHomeOneWayEnrollButton,
+            )
+
+    # Two identities of the same class transmitting from the hub are byte-identical on air apart
+    # from their source address, so whether they are separable at all depends on whether devices
+    # discriminate by source node -- an open question. Sharing a class is therefore allowed but
+    # worth saying out loud, because the symptom (both sets of devices reacting to either
+    # identity) has no other diagnostic.
+    classes_seen = {}
+    for identity in identities:
+        device_type = identity[CONF_IO_DEVICE_TYPE]
+        if device_type in classes_seen:
+            _LOGGER.warning(
+                "oneway_controllers '%s' and '%s' both address device class '%s'. 1W is "
+                "class-addressed, so unless your devices discriminate by source address, every "
+                "device of that class will act on commands from both.",
+                classes_seen[device_type],
+                identity[CONF_ID],
+                device_type,
+            )
+        else:
+            classes_seen[device_type] = identity[CONF_ID]
+
+    return config
+
+
+# cover:/light:/lock:/switch: are the device-bound platforms that can carry an io_device_id: or a
+# linked_remotes: entry (platform_common.py). button:/number:/select:/sensor:/text_sensor: are
+# either not device-bound or, for this component, hub-level only.
+_DEVICE_BOUND_DOMAINS = ("cover", "light", "lock", "switch")
+
+
+def _collect_declared_device_addresses(full_config):
+    """Map every node ID declared as an `io_device_id:` or a bare `linked_remotes:` entry, across
+    every `home_io_control` entity in `full_config`, to a human-readable owner string.
+
+    Only entries with `platform: home_io_control` are considered — the domains in
+    _DEVICE_BOUND_DOMAINS are shared with every other component that provides a cover/light/
+    lock/switch platform, and those have nothing to do with this component's address space.
+    `class:` linked_remotes entries name a device *type*, not a node, so they carry no address to
+    collide with and are skipped.
+
+    CONF_DEVICE_ID/CONF_LINKED_REMOTES are imported locally from platform_common rather than at
+    module level: platform_common imports back from this module (`from . import ...`), so a
+    module-level import here would be circular. By the time this function actually runs (final
+    validation, after every used platform module has already been imported), the cycle has
+    already resolved and the import is a plain cache hit.
+    """
+    from .platform_common import CONF_DEVICE_ID, CONF_LINKED_REMOTES
+
+    addresses = {}
+    for domain in _DEVICE_BOUND_DOMAINS:
+        for entry in full_config.get(domain, []):
+            if not isinstance(entry, dict) or entry.get(CONF_PLATFORM) != "home_io_control":
+                continue
+            owner_name = entry.get(CONF_NAME) or entry.get(CONF_ID) or "<unnamed>"
+            device_id = entry.get(CONF_DEVICE_ID)
+            if device_id:
+                addresses[device_id] = f"{domain} '{owner_name}' io_device_id"
+            for remote in entry.get(CONF_LINKED_REMOTES, []):
+                if remote.startswith("class:"):
+                    continue
+                addresses[remote] = f"{domain} '{owner_name}' linked_remotes"
+    return addresses
+
+
+def _final_validate_oneway_controller_addresses(config):
+    """Extend the oneway_controllers address-collision check to addresses declared outside
+    `home_io_control:` — a `linked_remotes:` entry or an `io_device_id:` on some other entity in
+    this same YAML.
+
+    Runs as FINAL_VALIDATE_SCHEMA rather than inside _validate_oneway_controllers() because only
+    final validation has access to the full cross-component config (`fv.full_config`) —
+    `cover:`/`light:`/`lock:`/`switch:` entries are validated independently of
+    `home_io_control:`'s own CONFIG_SCHEMA and are not visible to it. By this point
+    _validate_oneway_controllers() has already run, so every identity's `node_id` (derived or
+    explicit) is resolved.
+    """
+    identities = config.get(CONF_ONEWAY_CONTROLLERS, [])
+    if not identities:
+        return config
+
+    declared = _collect_declared_device_addresses(fv.full_config.get())
+    for identity in identities:
+        _reject_node_id_collision(
+            identity[CONF_ID], identity[CONF_NODE_ID], declared, identity.get(CONF_NODE_ID_DERIVED)
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate_oneway_controller_addresses
 
 
 def validate_device_id(value):
@@ -444,6 +883,10 @@ CONFIG_SCHEMA = cv.All(
                 validate_device_id
             ),
             cv.Optional(CONF_ACCEPT_FOREIGN_PAIRING, default=False): cv.boolean,
+            cv.Optional(CONF_RECOVER_ONEWAY_KEY, default=False): cv.boolean,
+            cv.Optional(CONF_ONEWAY_CONTROLLERS, default=[]): cv.ensure_list(
+                ONEWAY_CONTROLLER_SCHEMA
+            ),
             cv.Optional(CONF_DIAGNOSTIC_PROBES, default=False): cv.boolean,
             cv.Optional(CONF_LR1121_FIRMWARE_UPDATE): LR1121_FIRMWARE_UPDATE_SCHEMA,
             cv.Optional(tuning_module.CONF_TUNING): tuning_module.TUNING_CONFIG_SCHEMA,
@@ -452,6 +895,8 @@ CONFIG_SCHEMA = cv.All(
     .extend(cv.COMPONENT_SCHEMA)
     .extend(spi.spi_device_schema(True, 8e6, "mode0")),
     _inject_accept_foreign_pairing_switch_id,
+    _inject_recover_oneway_key_switch_id,
+    _validate_oneway_controllers,
     _validate_lr1121_firmware_update,
 )
 
@@ -513,8 +958,31 @@ async def to_code(config):
     for sender_id in config[CONF_EXPOSED_SENDERS]:
         cg.add(var.add_exposed_sender(sender_id))
 
+    for identity in config[CONF_ONEWAY_CONTROLLERS]:
+        cg.add(
+            var.add_oneway_controller(
+                oneway_controller_expression(identity, config[CONF_NODE_ID])
+            )
+        )
+        await _create_oneway_controller_entities(identity, var)
+
     if config[CONF_ACCEPT_FOREIGN_PAIRING]:
-        await _create_accept_foreign_pairing_switch(config, var)
+        await _create_hub_arming_switch(
+            config,
+            var,
+            cls=IOHomeAcceptForeignPairingSwitch,
+            id_key=CONF_ACCEPT_FOREIGN_PAIRING_SWITCH_ID,
+            name="Recover System Key",
+        )
+
+    if config[CONF_RECOVER_ONEWAY_KEY]:
+        await _create_hub_arming_switch(
+            config,
+            var,
+            cls=IOHomeRecoverOneWayKeySwitch,
+            id_key=CONF_RECOVER_ONEWAY_KEY_SWITCH_ID,
+            name="Recover 1W Controller Key",
+        )
 
     cg.add(var.set_diagnostic_probes_enabled(config[CONF_DIAGNOSTIC_PROBES]))
 
@@ -525,22 +993,96 @@ async def to_code(config):
         await tuning_module.to_code(config[tuning_module.CONF_TUNING], var)
 
 
-async def _create_accept_foreign_pairing_switch(config, var):
-    """Create the hub-level "Accept Foreign Pairing (Key Extraction)" switch.
+async def _create_oneway_controller_entities(identity, var):
+    """Create one identity's command buttons and its "Last 1W Command" diagnostic sensor.
+
+    Same normalization as the hub-level switches below: run a bare {id, name} dict through the
+    platform's own schema so it carries the entity/component defaults register_*() require.
+
+    Entity names derive from the identity handle and the command ("awning_remote" + "open" ->
+    "Awning Remote Open"), mirroring how the cover's favourite/vent companions derive theirs. The
+    *IDs* follow the documented `<identity_id>_<command>` rule instead, because those are what a
+    `time_based` cover composes against.
+    """
+    friendly_identity = identity[CONF_ID].replace("_", " ").title()
+
+    for command, button_id in identity[CONF_BUTTON_IDS].items():
+        entity_config = button_component.button_schema(
+            IOHomeOneWayCommandButton,
+        ).extend(cv.COMPONENT_SCHEMA)(
+            {
+                CONF_ID: button_id,
+                CONF_NAME: f"{friendly_identity} {command.replace('_', ' ').title()}",
+            }
+        )
+        entity = await button_component.new_button(entity_config)
+        await cg.register_component(entity, entity_config)
+        cg.add(entity.set_parent(var))
+        cg.add(entity.set_controller_id(identity[CONF_ID]))
+        cg.add(entity.set_action(ONEWAY_COMMANDS[command]))
+
+    # Always created, even with no buttons: an identity driven only by the
+    # `oneway_set_position` action still needs somewhere to show what it sent, and with no reply
+    # frame this sensor is the only place that can ever appear.
+    sensor_config = text_sensor_component.text_sensor_schema(
+        IOHomeOneWayLastCommandTextSensor,
+        entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+    ).extend(cv.COMPONENT_SCHEMA)(
+        {
+            CONF_ID: identity[CONF_LAST_COMMAND_SENSOR_ID],
+            CONF_NAME: f"{friendly_identity} Last 1W Command",
+        }
+    )
+    sensor = await text_sensor_component.new_text_sensor(sensor_config)
+    await cg.register_component(sensor, sensor_config)
+    cg.add(sensor.set_parent(var))
+    cg.add(sensor.set_controller_id(identity[CONF_ID]))
+
+    if identity[CONF_ENROLLMENT]:
+        # entity_category: config, not a switch behind an arming flag: the receiver's own 2s PROG
+        # hold is the real interlock -- a hub cannot enroll into a device nobody has walked up to
+        # (ADR 0026). ADR 0021's bootloader precedent doesn't apply here (that ADR is for an
+        # irreversible write; un-enrollment exists here as a rollback path).
+        #
+        # No "(May Replace Existing Remotes)" caveat: enrolling a new identity onto a device is
+        # additive, not destructive -- an existing remote keeps working alongside a newly enrolled
+        # hub. Un-enrollment (`0x39`, the `oneway_remove_controller` action) has not been confirmed
+        # to work on real hardware yet -- see that action's own doxygen (management_actions.h) --
+        # so "reversible" is the design intent, not yet a demonstrated fact.
+        enroll_config = button_component.button_schema(
+            IOHomeOneWayEnrollButton,
+            entity_category=ENTITY_CATEGORY_CONFIG,
+        ).extend(cv.COMPONENT_SCHEMA)(
+            {
+                CONF_ID: identity[CONF_ENROLL_BUTTON_ID],
+                CONF_NAME: f"{friendly_identity} Enroll 1W Controller",
+            }
+        )
+        enroll_entity = await button_component.new_button(enroll_config)
+        await cg.register_component(enroll_entity, enroll_config)
+        cg.add(enroll_entity.set_parent(var))
+        cg.add(enroll_entity.set_controller_id(identity[CONF_ID]))
+
+
+async def _create_hub_arming_switch(config, var, *, cls, id_key, name):
+    """Create a hub-level arming switch (key extraction or key adoption).
 
     Mirrors tuning.py's _create_number()/_create_select(): normalize a bare {id, name} dict
     through switch_schema()+COMPONENT_SCHEMA so it carries the entity/component defaults
     register_switch()/register_component() require, matching the neighboring pattern rather than
     hand-assembling a config dict shape of its own.
+
+    ALWAYS_OFF is a security property, not a UX default: every switch built here arms a window
+    (foreign-key extraction or 1W key adoption) that must never come back armed after a reboot.
     """
     entity_config = switch_component.switch_schema(
-        IOHomeAcceptForeignPairingSwitch,
+        cls,
         default_restore_mode="ALWAYS_OFF",  # never auto-arm after a reboot
         entity_category=ENTITY_CATEGORY_CONFIG,
     ).extend(cv.COMPONENT_SCHEMA)(
         {
-            CONF_ID: config[CONF_ACCEPT_FOREIGN_PAIRING_SWITCH_ID],
-            CONF_NAME: "Accept Foreign Pairing (Key Extraction)",
+            CONF_ID: config[id_key],
+            CONF_NAME: name,
         }
     )
     entity = await switch_component.new_switch(entity_config)

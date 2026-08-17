@@ -102,14 +102,14 @@ static constexpr uint8_t CMD_DISCOVER_ALT_RESP =
            ///< — the only capture this project has of it. Not otherwise used anywhere in this
            ///< codebase (no dispatch logic added).
 static constexpr uint8_t CMD_ONEWAY_ADD_CONTROLLER =
-    0x30;  ///< 1W "add controller": a 1W device broadcasts this while its key-copy gesture is
+    0x30;  ///< 1W "add controller" — a 1W device broadcasts this while its key-copy gesture is
            ///< active, handing its network's wrapped system key to whichever controller is
-           ///< listening — see docs/commands.md#30-send-1w-key in the reference project linked
-           ///< from issue #66. Not parsed or handled anywhere in this codebase (no 1W key-adoption
-           ///< feature exists here); the constant exists solely so redaction.h can recognize and
-           ///< mask any such frame this hub's radio passively overhears from a neighboring
-           ///< installation's 1W pairing gesture, the same way it already does for CMD_ONEWAY_REMOVE
-           ///< in pairing_advisor.cpp.
+           ///< listening. Its 20-byte declared payload (enc_key[16] + man_id[1] + data[1] +
+           ///< sequence[2]) plus a genuine 6-byte MAC does not fit inside CTRL0's 5-bit length
+           ///< field together (29 + 6 = 35, unrepresentable in 5 bits), so the MAC rides after
+           ///< the declared length instead, still under the CRC — see IoFrame::has_mac and
+           ///< frame_carries_mac_trailer() (proto_frame.h). Reference:
+           ///< tests/corpus/captures/reference_1w_vectors/oneway_add_controller_kat.yaml.
 static constexpr uint8_t CMD_ONEWAY_REMOVE = 0x39;  ///< 1W "remove controller" (un-pair a 1W remote from a device);
                                                     ///< same payload shape as 0x2E.
 
@@ -319,6 +319,17 @@ static constexpr uint8_t POS_FORCE_OPEN = 0x64;
 /// but ventilation sets the secondary byte (main[1]) to 0x03 while favorite leaves it 0x00.
 static constexpr uint8_t POS_VENT_MODIFIER = 0x03;
 
+/// @brief Scale factor between a 0-100 percent position and its CMD_EXECUTE main-byte wire value.
+///
+/// Percent 0-100 maps to wire 0-200 (wire = percent * POSITION_WIRE_SCALE), leaving 201-255 free
+/// for the POS_* special codes above. Builders multiply by this to encode a position; decoders
+/// divide by it to recover one — both directions belong on this one constant so they cannot
+/// silently drift apart into two different bare "2"s.
+static constexpr uint8_t POSITION_WIRE_SCALE = 2;
+/// @brief Highest doubled-position wire value: 100% * POSITION_WIRE_SCALE. A main byte at or
+/// below this is an ordinary position; above it, one of the POS_* special codes.
+static constexpr uint8_t POSITION_WIRE_MAX = 200;
+
 /// Status byte flags in CMD_PRIVATE_RESP and CMD_STATUS_UPDATE.
 static constexpr uint8_t STATUS_STOPPED = 0x01;        ///< Byte 0 bit 0: device is not moving
 static constexpr uint8_t STATUS_EXPECTED = 0x80;       ///< Byte 1 bit 7: device will send auto status update
@@ -389,6 +400,13 @@ static constexpr uint8_t MANUFACTURER_ATLANTIC_GROUP = 12;  ///< Atlantic Group 
 /// The manufacturer ID is a 1-based index assigned by the IO-Homecontrol alliance.
 /// IDs outside the known range return "unknown". When an unknown ID appears at runtime,
 /// the pairing flow logs a warning suggesting the user file a GitHub issue.
+/// @warning **Display-only — do not use this for YAML.** Four of the twelve names do not
+/// round-trip through `.strip().lower()` to their `manufacturer:` YAML token
+/// (`MANUFACTURER_OPTIONS`, `__init__.py`): `"Hörmann"` has an umlaut the YAML token
+/// (`hormann`) drops, and `"ASSA ABLOY"`/`"WINDOW MASTER"`/`"Atlantic Group"` use a space
+/// where the YAML token uses `_`. There is currently no YAML-token accessor for
+/// manufacturers — see `yaml_device_type_name()` (proto_device_model.h) for the pattern this
+/// would follow if one is ever added.
 /// @param id Manufacturer ID byte (1–12 for known manufacturers).
 /// @return Null-terminated lowercase string such as "unknown", or mixed-case name like "Somfy".
 const char *manufacturer_name(uint8_t id);

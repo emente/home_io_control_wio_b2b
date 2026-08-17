@@ -94,15 +94,122 @@ inline std::array<uint8_t, EXECUTE_PAYLOAD_SIZE> make_position_payload(uint8_t a
                                                                        bool silent = false) {
   // Only the profile byte changes; the non-silent form is untouched and is byte-identical to what
   // a Somfy hub sends for a normal-speed move.
-  return {EXECUTE_ORIGINATOR,
-          acei,
-          static_cast<uint8_t>(2 * position),
-          0x00,
-          EXECUTE_POSITION_LAYOUT_FLAG,
-          POS_FAVORITE,
-          silent ? EXECUTE_PROFILE_SILENT : EXECUTE_POSITION_PROFILE,
-          0x00};
+  return {EXECUTE_ORIGINATOR,           acei,         static_cast<uint8_t>(POSITION_WIRE_SCALE * position),       0x00,
+          EXECUTE_POSITION_LAYOUT_FLAG, POS_FAVORITE, silent ? EXECUTE_PROFILE_SILENT : EXECUTE_POSITION_PROFILE, 0x00};
 }
+
+// === 1W execute (CMD 0x00) frame assembly ===
+
+/// 1W execute command parameters: origin(1) + acei(1) + main[2] + fp1(1) + fp2(1). This is the
+/// 6-byte "special" payload form, which 1W uses even for numeric positions (unlike 2W's 8-byte
+/// create_execute_position() layout).
+constexpr uint8_t ONEWAY_EXECUTE_PARAMS_SIZE = 6;
+/// ACEI byte for 1W execute frames — level=2 (user_high), not EXECUTE_ACEI's level=3
+/// (user_default). EXECUTE_ACEI's own doc comment above pins level=3 to a real captured 2W hub;
+/// the 0x43/user_high alternative it mentions is what the published 1W reference vector
+/// (tests/corpus/captures/reference_1w_vectors/oneway_execute_iv_vector.yaml) actually carries, so
+/// 1W gets its own constant rather than sharing the 2W one.
+/// Composition: (ACEI_LEVEL_USER_HIGH << 5) | (0 << 3) | (1 << 1) | 1 = 0x43.
+constexpr uint8_t ONEWAY_EXECUTE_ACEI =
+    (ACEI_LEVEL_USER_HIGH << ACEI_LEVEL_SHIFT) | (1 << ACEI_EXTENDED_SHIFT) | ACEI_VALID_BIT;
+/// Rolling sequence width; big-endian on the wire, and never part of the signed span.
+constexpr uint8_t ONEWAY_SEQUENCE_SIZE = 2;
+/// 1W execute MAC span: the command byte followed by all ONEWAY_EXECUTE_PARAMS_SIZE parameter
+/// bytes, stopping before the sequence. See create_1w_execute_command()'s doxygen
+/// (proto_commands.h) for the published-vector and reference-implementation citations pinning
+/// this span; it is command-specific and must not be reused for any other 1W command.
+constexpr uint8_t ONEWAY_EXECUTE_MAC_SPAN_SIZE = 1 + ONEWAY_EXECUTE_PARAMS_SIZE;
+/// Offsets of the sequence and MAC within the payload, derived from the field widths above so
+/// the layout cannot be restated inconsistently.
+constexpr uint8_t ONEWAY_EXECUTE_SEQUENCE_OFFSET = ONEWAY_EXECUTE_PARAMS_SIZE;
+constexpr uint8_t ONEWAY_EXECUTE_MAC_OFFSET = ONEWAY_EXECUTE_SEQUENCE_OFFSET + ONEWAY_SEQUENCE_SIZE;
+/// 1W execute declared payload: parameters + sequence + MAC = 14 bytes, matching the reference
+/// `_p0x00_14` struct.
+constexpr uint8_t ONEWAY_EXECUTE_PAYLOAD_SIZE = ONEWAY_EXECUTE_MAC_OFFSET + HMAC_SIZE;
+/// 1W execute functional-parameter bytes; always zero for the frames this codebase builds.
+constexpr uint8_t ONEWAY_EXECUTE_FP1 = 0x00;
+constexpr uint8_t ONEWAY_EXECUTE_FP2 = 0x00;
+
+/// @brief Shared assembly for both 1W execute builders: header, MAC span/HMAC, and the 14-byte
+/// payload. create_1w_execute_position() and create_1w_execute_command() differ only in how they
+/// derive `main0`/`main1`; every other byte on the wire is identical, so this is the one place
+/// that wiring lives — a second copy would risk drifting from the published IV vector this
+/// span is pinned against.
+///
+/// ctrl1 is deliberately left at 0 (LOW_POWER / CTRL1_LOW_POWER NOT set), unlike every 2W builder
+/// in this file. The reference `forgePacket` sets it, but five independently captured real 1W
+/// frames all disagree: this project's own Somfy awning remote
+/// (tests/corpus/captures/somfy_awning/oneway_remote_{open,close,stop}_sx1276.yaml), an
+/// unidentified 1W remote (tests/corpus/captures/unidentified_1w_remote/oneway_execute.yaml), and
+/// the published vector (tests/corpus/captures/reference_1w_vectors/oneway_execute_iv_vector.yaml)
+/// all carry ctrl1=0x00. Followed the captures over the reference source on this point.
+/// Shared frame-header setup for every 1W broadcast builder (build_1w_execute(),
+/// create_1w_add_controller(), create_1w_remove_controller()): all three address a device-class
+/// broadcast rather than an individual node, and none set LOW_POWER.
+void init_1w_broadcast_frame(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type) {
+  init_frame(f, /*is_2w=*/false, /*start=*/true, /*end=*/true, /*low_power=*/false);
+
+  uint8_t dst[NODE_ID_SIZE];
+  encode_broadcast_address(target_type, dst);
+  set_dst(f, dst);
+  set_src(f, src);
+}
+
+bool build_1w_execute(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint8_t main0, uint8_t main1,
+                      uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE]) {
+  uint8_t payload[ONEWAY_EXECUTE_PAYLOAD_SIZE] = {EXECUTE_ORIGINATOR, ONEWAY_EXECUTE_ACEI, main0, main1,
+                                                  ONEWAY_EXECUTE_FP1, ONEWAY_EXECUTE_FP2};
+
+  // The span is the command byte followed by exactly the parameter bytes that go on air, so it
+  // is copied out of `payload` rather than restated — a restatement could drift from the wire
+  // and produce a signature that verifies against nothing.
+  uint8_t mac_span[ONEWAY_EXECUTE_MAC_SPAN_SIZE];
+  mac_span[0] = CMD_EXECUTE;
+  memcpy(&mac_span[1], payload, ONEWAY_EXECUTE_PARAMS_SIZE);
+
+  // Sign before touching `f`, so a failure leaves the caller's frame exactly as it found it.
+  // 1W is fire-and-forget: a caller that ignored the return value and transmitted a half-built
+  // frame would get no error back from anywhere — the failure would be silent and on air.
+  if (!crypto::create_1w_hmac(mac_span, sizeof(mac_span), sequence, controller_key,
+                              &payload[ONEWAY_EXECUTE_MAC_OFFSET]))
+    return false;
+
+  payload[ONEWAY_EXECUTE_SEQUENCE_OFFSET] = static_cast<uint8_t>(sequence >> BITS_PER_BYTE);
+  payload[ONEWAY_EXECUTE_SEQUENCE_OFFSET + 1] = static_cast<uint8_t>(sequence);
+
+  init_1w_broadcast_frame(f, src, target_type);
+
+  return set_cmd(f, CMD_EXECUTE, payload, sizeof(payload));
+}
+
+// === 1W Enrollment (CMD 0x30 add-controller / CMD 0x39 remove-controller) ===
+
+/// CMD 0x30 declared-payload layout: enc_key[16] + man_id[1] + data[1] + sequence[2] = 20 bytes.
+/// Offsets mirror decode_1w_add_controller()'s ONEWAY_ADD_CONTROLLER_* constants (proto_codecs.cpp)
+/// exactly, since the two must agree on the wire shape by construction.
+constexpr uint8_t ONEWAY_ADD_ENC_KEY_OFFSET = 0;
+constexpr uint8_t ONEWAY_ADD_MANUFACTURER_OFFSET = AES_KEY_SIZE;  // 16
+constexpr uint8_t ONEWAY_ADD_DATA_OFFSET = AES_KEY_SIZE + 1;      // 17
+constexpr uint8_t ONEWAY_ADD_SEQUENCE_OFFSET = AES_KEY_SIZE + 2;  // 18
+constexpr uint8_t ONEWAY_ADD_PAYLOAD_SIZE = AES_KEY_SIZE + 4;     // 20
+/// `data` field of CMD 0x30's payload — every source (published vector, reference `Add` case)
+/// shows 0x01 here; its meaning beyond "add" is undocumented.
+constexpr uint8_t ONEWAY_ADD_DATA_VALUE = 0x01;
+/// CMD 0x30's MAC span: cmd + enc_key only (17 bytes) — verified against the published vector
+/// (create_1w_hmac()'s `@warning`), NOT the whole declared payload.
+constexpr uint8_t ONEWAY_ADD_MAC_SPAN_SIZE = 1 + AES_KEY_SIZE;
+
+/// CMD 0x39 declared-payload layout, matching the reference `_p0x2e` struct: data[1] + sequence[2]
+/// + mac[6] = 9 bytes, MAC inside the declared length (unlike CMD 0x30's out-of-length trailer).
+constexpr uint8_t ONEWAY_REMOVE_DATA_OFFSET = 0;
+constexpr uint8_t ONEWAY_REMOVE_SEQUENCE_OFFSET = 1;
+constexpr uint8_t ONEWAY_REMOVE_MAC_OFFSET = 3;
+constexpr uint8_t ONEWAY_REMOVE_PAYLOAD_SIZE = 9;
+/// `data` field observed in every source for CMD 0x39.
+constexpr uint8_t ONEWAY_REMOVE_DATA_VALUE = 0x00;
+/// CMD 0x39's MAC span. No known-answer vector pins this — see create_1w_remove_controller()'s
+/// `@warning` (proto_commands.h) for why `cmd + data` was chosen over the alternatives.
+constexpr uint8_t ONEWAY_REMOVE_MAC_SPAN_SIZE = 2;
 
 }  // namespace
 
@@ -178,6 +285,113 @@ bool create_force_open(IoFrame &f, const uint8_t *own, const uint8_t *dst, bool 
   set_src(f, own);
   const auto payload = make_position_payload(EXECUTE_ACEI_FORCE_OPEN, open_position);
   return set_cmd(f, CMD_EXECUTE, payload.data(), payload.size());
+}
+
+/// Build a 1W position execute frame (CMD 0x00) targeting a device class. See proto_commands.h
+/// for the full contract.
+bool create_1w_execute_position(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint8_t position,
+                                uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE]) {
+  if (position > POSITION_PERCENT_MAX)
+    return false;
+  return build_1w_execute(f, src, target_type, static_cast<uint8_t>(POSITION_WIRE_SCALE * position), 0x00, sequence,
+                          controller_key);
+}
+
+/// Build a 1W named-command execute frame (CMD 0x00) targeting a device class. See
+/// proto_commands.h for the full contract, including why 1W has no FORCE_OPEN: the only known
+/// wire encoding for the label (POS_FORCE_OPEN, main=0x64) was hardware-tested as an ordinary
+/// move-to-50% command, not a lock bypass — see the POS_FORCE_OPEN doc comment in
+/// proto_constants.h. Passing CoverCommand::FORCE_OPEN here falls through to `default` and
+/// returns false, matching 2W's create_execute_command().
+bool create_1w_execute_command(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, CoverCommand cmd,
+                               uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE]) {
+  uint8_t main0 = 0;
+  uint8_t main1 = 0;
+  switch (cmd) {
+    case CoverCommand::STOP:
+      main0 = POS_STOP;
+      break;
+    case CoverCommand::FAVORITE:
+      main0 = POS_FAVORITE;
+      break;
+    case CoverCommand::VENT:
+      main0 = POS_FAVORITE;
+      main1 = POS_VENT_MODIFIER;
+      break;
+    default:
+      return false;
+  }
+  return build_1w_execute(f, src, target_type, main0, main1, sequence, controller_key);
+}
+
+/// Build a 1W add-controller frame (CMD 0x30). See proto_commands.h for the full contract,
+/// including why the MAC is an optional, out-of-length trailer here and not inside the declared
+/// payload, and why `with_mac` exists at all (real hardware omits it; the published vector
+/// doesn't).
+bool create_1w_add_controller(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint8_t manufacturer,
+                              uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE], bool with_mac) {
+  uint8_t payload[ONEWAY_ADD_PAYLOAD_SIZE] = {0};
+
+  // Self-inverse wrap (crypto::crypt_1w_key()'s doxygen) -- the same call decode_1w_add_controller()
+  // uses to unwrap an overheard 0x30 also wraps our own key for transmission here.
+  if (!crypto::crypt_1w_key(src, controller_key, &payload[ONEWAY_ADD_ENC_KEY_OFFSET]))
+    return false;
+
+  payload[ONEWAY_ADD_MANUFACTURER_OFFSET] = manufacturer;
+  payload[ONEWAY_ADD_DATA_OFFSET] = ONEWAY_ADD_DATA_VALUE;
+  payload[ONEWAY_ADD_SEQUENCE_OFFSET] = static_cast<uint8_t>(sequence >> BITS_PER_BYTE);
+  payload[ONEWAY_ADD_SEQUENCE_OFFSET + 1] = static_cast<uint8_t>(sequence);
+
+  // The span is command + enc_key only, copied out of `payload` rather than restated -- see
+  // build_1w_execute()'s comment for why a restatement risks drifting from the wire. Computed
+  // even when with_mac is false so a caller flipping the flag later doesn't also have to
+  // reconsider whether signing itself can fail -- crypto::create_1w_hmac() is still the "sign
+  // before touching f" guard for the whole builder either way.
+  uint8_t mac_span[ONEWAY_ADD_MAC_SPAN_SIZE];
+  mac_span[0] = CMD_ONEWAY_ADD_CONTROLLER;
+  memcpy(&mac_span[1], &payload[ONEWAY_ADD_ENC_KEY_OFFSET], AES_KEY_SIZE);
+
+  uint8_t mac[HMAC_SIZE];
+  // Sign before touching `f`, same rule as build_1w_execute(): 1W is fire-and-forget, so a
+  // half-built frame a caller transmitted anyway would fail silently with nobody to report it.
+  if (!crypto::create_1w_hmac(mac_span, sizeof(mac_span), sequence, controller_key, mac))
+    return false;
+
+  init_1w_broadcast_frame(f, src, target_type);
+
+  if (!set_cmd(f, CMD_ONEWAY_ADD_CONTROLLER, payload, sizeof(payload)))
+    return false;
+
+  // The MAC is an out-of-length trailer for this command only (frame_carries_mac_trailer()) --
+  // set after set_cmd() succeeds, since init_frame() above would otherwise reset it right back
+  // off. Left false (real Somfy hardware's own shape) when with_mac is false.
+  if (with_mac) {
+    f.has_mac = true;
+    memcpy(f.mac, mac, HMAC_SIZE);
+  }
+  return true;
+}
+
+/// Build a 1W remove-controller frame (CMD 0x39). See proto_commands.h for the full contract,
+/// including the @warning that no vector pins this command's MAC span.
+bool create_1w_remove_controller(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint16_t sequence,
+                                 const uint8_t controller_key[AES_KEY_SIZE]) {
+  uint8_t payload[ONEWAY_REMOVE_PAYLOAD_SIZE] = {0};
+  payload[ONEWAY_REMOVE_DATA_OFFSET] = ONEWAY_REMOVE_DATA_VALUE;
+  payload[ONEWAY_REMOVE_SEQUENCE_OFFSET] = static_cast<uint8_t>(sequence >> BITS_PER_BYTE);
+  payload[ONEWAY_REMOVE_SEQUENCE_OFFSET + 1] = static_cast<uint8_t>(sequence);
+
+  // Unpinned span (see the @warning in proto_commands.h): cmd + data, the same "everything before
+  // the sequence" shape CMD 0x00's span follows.
+  uint8_t mac_span[ONEWAY_REMOVE_MAC_SPAN_SIZE] = {CMD_ONEWAY_REMOVE, payload[ONEWAY_REMOVE_DATA_OFFSET]};
+
+  // Sign before touching `f` -- same rule as every other 1W builder in this file.
+  if (!crypto::create_1w_hmac(mac_span, sizeof(mac_span), sequence, controller_key, &payload[ONEWAY_REMOVE_MAC_OFFSET]))
+    return false;
+
+  init_1w_broadcast_frame(f, src, target_type);
+
+  return set_cmd(f, CMD_ONEWAY_REMOVE, payload, sizeof(payload));
 }
 
 /// Build a CMD_PRIVATE (0x03) request for an arbitrary function ID. function_id = 0x06/0x09

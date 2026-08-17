@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -285,6 +286,188 @@ inline std::map<std::string, std::string> build_sender_event_data(const OneWayFr
       {"acei_level", acei_level_name(info.acei_level)},
       {"linked", linked ? "true" : "false"},
   };
+}
+
+// ============================================================================
+// Key-material display formatting
+// ============================================================================
+
+/// @brief Format a 16-byte key as an uppercase, unseparated hex string for display.
+///
+/// The one deliberate place system-key bytes are formatted for display, shared by both
+/// key-recovery features so neither forks its own copy: 2W "Accept Foreign Pairing"
+/// (hub_key_extraction.cpp::log_key_extraction_result_()) and 1W controller-key adoption
+/// (build_oneway_adoption_report() below). See redaction.h for the masking rules this
+/// intentionally does not apply to — both callers are the deliberate exception, not a loosening
+/// of it.
+/// @param key Pointer to AES_KEY_SIZE key bytes.
+/// @return Uppercase hex string, e.g. "0102030405060708090A0B0C0D0E0F10".
+inline std::string format_key_hex(const uint8_t key[AES_KEY_SIZE]) {
+  std::string out;
+  out.reserve(AES_KEY_SIZE * 2);
+  char byte_buf[3];
+  for (uint8_t i = 0; i < AES_KEY_SIZE; i++) {
+    snprintf(byte_buf, sizeof(byte_buf), "%02X", key[i]);
+    out += byte_buf;
+  }
+  return out;
+}
+
+/// @brief Log `prefix` followed by `message`, one line per log call rather than one call for the
+/// whole (possibly multi-line) string.
+///
+/// ESPHome formats each log call into a fixed 512-byte buffer (`ESPHOME_LOGGER_TX_BUFFER_SIZE`,
+/// esphome/core/defines.h) and silently truncates anything longer; a multi-line report (a YAML
+/// snippet plus explanatory prose) routinely exceeds that and truncates mid-line if logged as a
+/// single call — confirmed on real hardware for both call sites this function serves:
+/// `scan_paired_devices()`'s report (a multi-device report cut off mid-snippet) and 1W
+/// controller-key adoption's report (the recovered `system_key` line itself never made it into
+/// the log at all). Splitting by line keeps every individual call's payload small regardless of
+/// how long the full message is. Shared rather than duplicated a third time — a second private
+/// copy is exactly how the 1W path ended up with the bug this fixes.
+/// @param tag        Log tag.
+/// @param is_warning True to log at WARN, false for INFO.
+/// @param prefix     Prepended to the message's first line only (e.g. "Management action X: ").
+/// @param message    Message to log; may contain embedded `\n` line breaks.
+inline void log_multiline_result(const char *tag, bool is_warning, const std::string &prefix,
+                                 const std::string &message) {
+  size_t start = 0;
+  bool first = true;
+  while (true) {
+    const size_t end = message.find('\n', start);
+    const std::string line = (end == std::string::npos) ? message.substr(start) : message.substr(start, end - start);
+    const std::string out = first ? prefix + line : line;
+    if (is_warning) {
+      ESP_LOGW(tag, "%s", out.c_str());
+    } else {
+      ESP_LOGI(tag, "%s", out.c_str());
+    }
+    first = false;
+    if (end == std::string::npos || end + 1 >= message.size())
+      break;
+    start = end + 1;
+  }
+}
+
+// ============================================================================
+// 1W controller-key adoption reporting
+// ============================================================================
+
+/// @brief Human-readable name for a decoded 0x30's MAC-verification outcome.
+/// @param status Outcome from decode_1w_add_controller() (see OneWayAdoptedKey::mac_status).
+/// @return Short uppercase-style label used in both the summary log line and the report below.
+inline const char *oneway_mac_status_name(OneWayMacStatus status) {
+  switch (status) {
+    case OneWayMacStatus::VERIFIED:
+      return "VERIFIED";
+    case OneWayMacStatus::FAILED:
+      return "FAILED";
+    case OneWayMacStatus::NOT_PRESENT:
+    default:
+      return "not present";
+  }
+}
+
+/// @brief Build the full 1W controller-key-adoption report: MAC-verification status, the
+/// own-address transmission rationale, and the ready-to-paste `oneway_controllers:` YAML block.
+///
+/// Pure — takes already-decoded values, performs no I/O — so it is directly unit-testable
+/// without a live radio or a captured log line (ESP_LOG's host stub discards its arguments).
+/// This is the single intentional place `adopted.system_key` is formatted for display (via
+/// format_key_hex() above); the caller (hub_oneway_key_adoption.cpp) passes the returned text to
+/// one ESP_LOGW(...,"%s",...) call and nowhere else.
+///
+/// `node_id` is deliberately never mentioned as something to fill in — a later step derives one
+/// from the hub's own node ID, and the report says so rather than asking the user to invent a
+/// 3-byte address. The report also explains that the hub always transmits under its own address:
+/// impersonating the sender would hijack that remote's rolling sequence counter and break it.
+///
+/// The emitted keys must track `ONEWAY_CONTROLLER_SCHEMA` (`__init__.py`) by hand — a newly
+/// required schema key needs a matching line here too. `make yaml-emitter-sync`
+/// (scripts/check-yaml-emitters.py) catches drift between the two statically; it does not tell
+/// you what to add here.
+///
+/// @param adopted Decoded controller identity from decode_1w_add_controller() (proto_codecs.h).
+/// @param observed_type_known True if this sender's other 1W traffic was observed while armed
+/// (see IOHomeControlComponent::record_oneway_observed_class_()); false prints a commented-out
+/// fallback pointing at the DEBUG log line that would reveal it instead.
+/// @param observed_type The observed target class; only meaningful when observed_type_known.
+/// @return Multi-line report text, ready to pass straight to a single ESP_LOGW(...,"%s",...) call.
+inline std::string build_oneway_adoption_report(const OneWayAdoptedKey &adopted, bool observed_type_known,
+                                                DeviceType observed_type) {
+  std::string sender_hex_lower = node_id_to_string(adopted.sender_node);
+  std::transform(sender_hex_lower.begin(), sender_hex_lower.end(), sender_hex_lower.begin(),
+                 [](unsigned char c) { return std::tolower(c); });
+  const std::string key_hex = format_key_hex(adopted.system_key);
+
+  std::string mac_line;
+  switch (adopted.mac_status) {
+    case OneWayMacStatus::VERIFIED:
+      mac_line = "MAC VERIFIED: this frame's MAC checked out under the recovered key -- the strongest evidence "
+                 "available on the spot that it is correct.";
+      break;
+    case OneWayMacStatus::FAILED:
+      mac_line = "MAC FAILED: this frame's MAC did NOT check out under the recovered key -- it is probably wrong. "
+                 "Re-arm and repeat the key-copy gesture closer to the hub.";
+      break;
+    case OneWayMacStatus::NOT_PRESENT:
+    default:
+      mac_line = "MAC not present: this frame carried no MAC trailer to verify against -- treat this key as "
+                 "unconfirmed until tested.";
+      break;
+  }
+
+  // Fits "    manufacturer: 0xNN" plus its terminator with room to spare.
+  constexpr size_t manufacturer_line_size = 32;
+  char manufacturer_line[manufacturer_line_size];
+  snprintf(manufacturer_line, sizeof(manufacturer_line), "    manufacturer: 0x%02X",
+           static_cast<unsigned>(adopted.manufacturer));
+
+  std::string type_lines;
+  if (observed_type_known) {
+    type_lines = "    io_device_type: " + format_device_type_for_yaml(observed_type) +
+                 "      # observed from this sender's traffic; verify\n";
+  } else {
+    type_lines = "    # io_device_type: unknown -- no other 1W traffic was observed from this sender while armed;\n"
+                 "    #   check the DEBUG \"rx 1W remote ...\" log line once you see this sender transmit again.\n";
+  }
+
+  return mac_line +
+         "\nThe hub always transmits under its own node_id, never the sender's -- copying the sender's address "
+         "would hijack its rolling sequence counter and break its existing remote.\n"
+         "Copy the block below into your hub's YAML.\n"
+         "oneway_controllers:\n"
+         "  # node_id omitted -> derived from your hub node_id; see the boot log\n"
+         "  - id: adopted_" +
+         sender_hex_lower + "\n" + "    system_key: \"" + key_hex + "\"\n" + manufacturer_line + "\n" + type_lines +
+         "    commands: [open, close, stop]";
+}
+
+/// @brief Build the ready-to-paste 2W system-key-extraction report: `node_id:`/`system_key:` as a
+/// `home_io_control:` YAML block.
+///
+/// Pure — takes already-decoded values, performs no I/O — so it is directly unit-testable without
+/// a live radio, mirroring build_oneway_adoption_report() above; the two features end up sharing
+/// report *structure* as well as format_key_hex(). The caller (hub_key_extraction.cpp) logs the
+/// result through log_multiline_result() and nowhere else — this is the single intentional place
+/// the recovered `system_key` is formatted for display, a deliberate exception to redaction.h's
+/// masking.
+///
+/// The emitted keys must track the hub's own `CONFIG_SCHEMA` (`__init__.py`) by hand. `make
+/// yaml-emitter-sync` (scripts/check-yaml-emitters.py) catches drift between the two by
+/// cross-referencing this function's emitted key names against that schema statically.
+/// @param node_id Recovered hub node_id, 3 bytes.
+/// @param key Recovered system key, 16 bytes.
+/// @return Multi-line report text, ready to pass to log_multiline_result().
+inline std::string build_key_extraction_report(const uint8_t node_id[NODE_ID_SIZE], const uint8_t key[AES_KEY_SIZE]) {
+  return "SYSTEM KEY EXTRACTED -- DO NOT SHARE YOUR SYSTEM KEY\n"
+         "Anyone with this key and node_id can control every device on this installation.\n"
+         "This exchange has not been independently confirmed against your specific hub -- test\n"
+         "this key (e.g. by controlling a device with it) before relying on it.\n"
+         "Copy the block below into a new hub's YAML.\n"
+         "home_io_control:\n"
+         "  node_id: \"" +
+         node_id_to_string(node_id) + "\"\n" + "  system_key: \"" + format_key_hex(key) + "\"";
 }
 
 // ============================================================================

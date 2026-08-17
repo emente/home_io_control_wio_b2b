@@ -43,6 +43,8 @@
 #include "pairing_engine.h"
 #include "management_actions.h"
 #include "pairing_responder.h"
+#include "oneway_controller.h"
+#include "oneway_transmitter.h"
 #include "lr1121_firmware_decisions.h"
 #include "radio_lr1121_firmware_updater.h"
 #include <map>
@@ -79,7 +81,13 @@ class IOHomeControlComponent : public Component,
   IOHomeControlComponent()
       : exchange_engine_(&radio_, node_id_, system_key_, &tuning_),
         pairing_engine_(&radio_, node_id_, system_key_, &tuning_, exchange_engine_, registry_, pairing_telemetry_),
-        management_actions_(node_id_, system_key_, &tuning_, exchange_engine_, registry_, &initialized_, this) {}
+        management_actions_(node_id_, system_key_, &tuning_, exchange_engine_, registry_, &initialized_, this),
+        // Capturing `this` is safe here: the callback is only ever invoked from send_burst(),
+        // long after construction. It injects the *ability* to transmit rather than a reference
+        // to whichever collaborator currently owns the radio.
+        oneway_transmitter_([this](const IoFrame &frame, uint32_t freq, uint16_t preamble) {
+          return this->transmit_frame_(frame, freq, preamble);
+        }) {}
 
   /// @brief Result payload used by hub-level management actions such as rename.
   /// Alias of the standalone esphome::home_io_control::ManagementActionResult struct so that
@@ -225,6 +233,88 @@ class IOHomeControlComponent : public Component,
   /// @param sender_id Node ID of the 1W sender (remote or sensor).
   void add_exposed_sender(const std::string &sender_id) { this->exposed_senders_.push_back(sender_id); }
 
+  /// Register a configured 1W controller identity (see oneway_controller.h). Called once per
+  /// `oneway_controllers:` entry from generated code. Both the source address and the key are
+  /// already resolved at schema time — a derived address is computed there so a collision with
+  /// the hub's own address or another identity fails the build rather than silently desyncing a
+  /// transmitter at runtime.
+  /// @param identity Fully-resolved controller identity.
+  void add_oneway_controller(const OneWayControllerIdentity &identity) {
+    this->oneway_transmitter_.add_identity(identity);
+  }
+
+  /// @return The configured 1W controller identities.
+  [[nodiscard]] const OneWayControllerRegistry &oneway_controllers() const {
+    return this->oneway_transmitter_.identities();
+  }
+
+  /// @brief Queue a 1W named command, sent as the given controller identity.
+  ///
+  /// Goes through the operation queue like every other radio operation (ADR 0013), so a 1W burst
+  /// can never interleave with a 2W exchange. Unlike a 2W command this reports nothing back: 1W
+  /// has no reply, so a queued command that a device ignores is indistinguishable from one it
+  /// obeyed. The "Last 1W Command" diagnostic reports what was *transmitted*, which is the only
+  /// half of that the hub can know.
+  /// @param controller_id Controller-identity handle from `oneway_controllers:`.
+  /// @param cmd Named command (STOP, FAVORITE, VENT, FORCE_OPEN).
+  void send_oneway_command(const std::string &controller_id, CoverCommand cmd) {
+    this->op_queue_.enqueue_oneway_command(controller_id, cmd);
+  }
+
+  /// @brief Queue a 1W numeric position, sent as the given controller identity.
+  /// @param controller_id Controller-identity handle from `oneway_controllers:`.
+  /// @param position Target position 0–100 (0 = fully open, 100 = fully closed).
+  void send_oneway_position(const std::string &controller_id, uint8_t position) {
+    this->op_queue_.enqueue_oneway_position(controller_id, position);
+  }
+
+  /// @brief Queue whichever of position/command a generated button's action resolves to.
+  ///
+  /// The mapping is applied here, at enqueue time, so the queue only ever holds concrete
+  /// operations — OPEN and CLOSE are positions on the wire, not commands, and nothing downstream
+  /// should have to know that twice.
+  /// @param controller_id Controller-identity handle from `oneway_controllers:`.
+  /// @param action Button action to send.
+  void send_oneway_action(const std::string &controller_id, OneWayButtonAction action) {
+    const OneWayActionEncoding encoding = encode_oneway_action(action);
+    if (encoding.is_position) {
+      this->send_oneway_position(controller_id, encoding.position);
+    } else {
+      this->send_oneway_command(controller_id, encoding.command);
+    }
+  }
+
+  /// @brief Queue a 1W enrollment (add-controller) for the given controller identity — the
+  /// enroll button's press handler.
+  ///
+  /// Sends `0x30` alone, no `0x39` prelude — see OneWayTransmitter::send_enrollment().
+  /// @param controller_id Controller-identity handle from `oneway_controllers:`.
+  void send_oneway_enroll(const std::string &controller_id) { this->op_queue_.enqueue_oneway_enroll(controller_id); }
+
+  /// @brief Queue a 1W un-enrollment (remove-controller) for the given controller identity — the
+  /// only caller of `0x39`, reached only through the explicitly-named `oneway_remove_controller`
+  /// native API action, never automatically.
+  ///
+  /// @warning **Unconfirmed on real hardware.** `0x39` has had no observable effect on this
+  /// project's test hardware; the leading hypothesis is that it needs the same association-mode
+  /// window enrollment does. See ADR 0026 § Consequences.
+  /// @param controller_id Controller-identity handle from `oneway_controllers:`.
+  void send_oneway_unenroll(const std::string &controller_id) {
+    this->op_queue_.enqueue_oneway_unenroll(controller_id);
+  }
+
+  /// @brief Subscribe to the report emitted after every 1W command attempt.
+  ///
+  /// A list rather than a single slot: each identity gets its own "Last 1W Command" sensor, and
+  /// each filters the reports down to its own handle.
+  /// @param callback Invoked for every attempt, successful or not.
+  void add_oneway_command_report_callback(OneWayCommandReportFn callback) {
+    this->oneway_report_callbacks_.push_back(std::move(callback));
+  }
+
+  /// @return The 1W transmit collaborator, for diagnostics and the sequence-resync path.
+  [[nodiscard]] OneWayTransmitter &oneway_transmitter() { return this->oneway_transmitter_; }
+
   /// @return The telemetry recorded for the most recent (or in-progress) pairing attempt.
   [[nodiscard]] const PairingTelemetry &pairing_telemetry() const { return this->pairing_telemetry_; }
 
@@ -234,7 +324,7 @@ class IOHomeControlComponent : public Component,
   /// @param cb Callable with no arguments.
   void set_pairing_result_callback(std::function<void()> cb) { this->pairing_result_callback_ = std::move(cb); }
 
-  /// @brief Arm or disarm the "Accept Foreign Pairing (Key Extraction)" responder.
+  /// @brief Arm or disarm the "Recover System Key" (key extraction) responder.
   ///
   /// Arming picks a fresh throwaway node ID, resets the pairing_responder state machine to
   /// ARMED_IDLE, and schedules a 10-minute auto-off. While armed, the 0x28/0x2C/0x31/0x32 branches
@@ -255,6 +345,29 @@ class IOHomeControlComponent : public Component,
   void set_key_extraction_armed_callback(std::function<void(bool)> cb) {
     this->key_extraction_armed_callback_ = std::move(cb);
   }
+
+  /// Arm or disarm the 1W controller-key adoption listener. While armed, an overheard
+  /// CMD_ONEWAY_ADD_CONTROLLER broadcast is decrypted and reported once, after which the hub
+  /// disarms itself — one adoption per arm, which bounds how long a key-bearing frame can be
+  /// captured and matches the single physical key-copy gesture the user performs. Receive-only:
+  /// unlike 2W key extraction this never transmits, it only listens for a frame a 1W device
+  /// broadcasts of its own accord. Virtual so platform unit tests can substitute a mock hub,
+  /// matching every other queue_*/set_* entry point on this component.
+  /// @param armed Desired state.
+  virtual void set_oneway_key_adoption_armed(bool armed);
+
+  /// Register a callback invoked whenever the 1W key-adoption armed state changes — manual
+  /// toggle, successful adoption, or auto-off timeout — so the switch entity stays in sync when
+  /// the hub disarms itself rather than the user. Single-slot, mirrors
+  /// set_key_extraction_armed_callback().
+  /// @param cb Callable receiving the new armed state.
+  void set_oneway_key_adoption_armed_callback(std::function<void(bool)> cb) {
+    this->oneway_key_adoption_armed_callback_ = std::move(cb);
+  }
+
+  /// Whether the 1W key-adoption listener is currently armed.
+  /// @return true while armed.
+  [[nodiscard]] bool oneway_key_adoption_armed() const { return this->oneway_key_adoption_armed_; }
 
   /// @brief Set whether ManagementActions::probe_device()/probe_sweep() are allowed to run.
   ///
@@ -520,6 +633,21 @@ class IOHomeControlComponent : public Component,
   /// @param frame Parsed inbound frame.
   /// @return true if the frame was handled (caller should stop further dispatch for it).
   bool try_handle_key_extraction_frame_(const IoFrame &frame);
+  /// Decode an inbound CMD_ONEWAY_ADD_CONTROLLER (0x30) while the 1W key-adoption listener is
+  /// armed, report the result, and disarm. Returns false — including when disarmed — so the
+  /// frame still flows through the normal 1W logging path unchanged; this listener observes,
+  /// it does not consume.
+  /// @param frame Parsed inbound 1W frame.
+  void try_adopt_oneway_key_(const IoFrame &frame);
+  /// Remember the most recent 1W target device class observed from `info.src`, for the 1W
+  /// key-adoption report's `io_device_type` prefill (see build_oneway_adoption_report(),
+  /// hub_internal.h). No-op unless armed and `info.target_type` is a real class — the
+  /// add-controller frame itself broadcasts to "all" (no class), so decoding it never clobbers a
+  /// genuine earlier observation from the same sender. Called unconditionally from the 1W RX
+  /// branch (hub_status.cpp), mirroring try_adopt_oneway_key_()'s "always call, self-gate on
+  /// armed" shape.
+  /// @param info Already-decoded 1W frame info (see decode_1w_frame()).
+  void record_oneway_observed_class_(const OneWayFrameInfo &info);
   /// Handle an inbound CMD_DISCOVER_REQ (0x28) while the key-extraction responder is armed.
   /// @param frame Parsed inbound discovery broadcast.
   void handle_key_extraction_discover_(const IoFrame &frame);
@@ -557,9 +685,17 @@ class IOHomeControlComponent : public Component,
   /// tests/corpus/captures/somfy_awning/execute_ack_reports_stale_target_*.yaml), so
   /// execute_request_and_update_() passes false there; every other caller trusts as before.
   void update_device_status_(const IoFrame &frame, bool trust_position = true);
-  /// Record that a 1W frame just arrived, updating last_1w_activity_ms_ and — when this frame
-  /// starts a new burst (see decisions::oneway_burst_started_fresh()) — first_1w_activity_ms_.
-  /// @param now millis() at which this frame arrived.
+  /// Record that a 1W frame just went out on the radio — ours or someone else's — updating
+  /// last_1w_activity_ms_ and — when this frame starts a new burst (see
+  /// decisions::oneway_burst_started_fresh()) — first_1w_activity_ms_.
+  ///
+  /// Called both from process_received_packet_() for an overheard remote's frame and from
+  /// execute_oneway_command_()/execute_oneway_position_() (hub_operations.cpp) for a frame this
+  /// hub just transmitted itself. That second case is deliberate, not a misuse of a receive-path
+  /// hook: our own burst should defer background polls exactly like a remote's does, because it
+  /// puts the same 1W traffic on the same shared channel the polls would otherwise use, and the
+  /// devices it targets need the same settling time either way.
+  /// @param now millis() at which this frame was seen or sent.
   void record_1w_activity_(uint32_t now);
   /// Schedule a delayed status poll for a registered device using the Component timeout API.
   /// @param device_id ID of the device to poll.
@@ -653,6 +789,32 @@ class IOHomeControlComponent : public Component,
   /// @param cmd Named command to execute.
   /// @return true if device acknowledged; false otherwise.
   bool execute_device_command_(const std::string &device_id, CoverCommand cmd);
+  /// Shared bookkeeping for every 1W transmit: mark the radio busy for the duration of `send`,
+  /// then record it as 1W activity so background polls back off for it exactly as they do for a
+  /// remote's burst — the radio is equally busy either way. Every 1W execute must go through this;
+  /// a future one that skips it would compile, pass, and silently break poll-deferral.
+  /// @param send Callable that performs the actual transmit; takes no arguments.
+  template<typename F> void execute_oneway_(F &&send) {
+    this->busy_ = true;
+    send();
+    this->busy_ = false;
+    this->record_1w_activity_(millis());
+  }
+  /// Send a queued 1W named command. Unlike its 2W sibling this returns nothing: there is no
+  /// acknowledgement to report, and success here would only mean "bytes left the radio".
+  /// @param controller_id Controller-identity handle.
+  /// @param cmd Named command to send.
+  void execute_oneway_command_(const std::string &controller_id, CoverCommand cmd);
+  /// Send a queued 1W numeric position. See execute_oneway_command_().
+  /// @param controller_id Controller-identity handle.
+  /// @param position Target position 0–100.
+  void execute_oneway_position_(const std::string &controller_id, uint8_t position);
+  /// Send a queued 1W enrollment (add-controller). See execute_oneway_command_().
+  /// @param controller_id Controller-identity handle.
+  void execute_oneway_enroll_(const std::string &controller_id);
+  /// Send a queued 1W un-enrollment (remove-controller). See execute_oneway_command_().
+  /// @param controller_id Controller-identity handle.
+  void execute_oneway_unenroll_(const std::string &controller_id);
   /// Fire all registered device update callbacks for the given device ID.
   /// @param id Device ID that updated.
   void notify_device_update_(const std::string &id);
@@ -687,6 +849,14 @@ class IOHomeControlComponent : public Component,
   }
   /// Native API callback: broadcast a roll-call scan of already-paired devices.
   void api_scan_paired_devices_() { this->management_actions_.api_scan_paired_devices(); }
+  /// Native API callback: queue a 1W position for a controller identity.
+  void api_oneway_set_position_(const std::string &controller_id, const std::string &position) {
+    this->management_actions_.api_oneway_set_position(controller_id, position);
+  }
+  /// Native API callback: queue a 1W un-enrollment (remove-controller) for a controller identity.
+  void api_oneway_remove_controller_(const std::string &controller_id) {
+    this->management_actions_.api_oneway_remove_controller(controller_id);
+  }
   /// Native API callback: run a single diagnostic probe against a registered device.
   void api_probe_device_(const std::string &device_id, const std::string &probe, const std::string &index) {
     this->management_actions_.api_probe_device(device_id, probe, index);
@@ -829,6 +999,21 @@ class IOHomeControlComponent : public Component,
   pairing_responder::ResponderContext key_extraction_ctx_;
   /// Invoked whenever the key-extraction armed state changes; see set_key_extraction_armed_callback().
   std::function<void(bool)> key_extraction_armed_callback_;
+  /// True while the 1W key-adoption listener is armed; see set_oneway_key_adoption_armed().
+  bool oneway_key_adoption_armed_{false};
+  /// Invoked whenever the 1W key-adoption armed state changes; see
+  /// set_oneway_key_adoption_armed_callback().
+  std::function<void(bool)> oneway_key_adoption_armed_callback_;
+  /// Most recent 1W target device class observed from a sender while the key-adoption listener
+  /// is armed. Single-slot — this is a one-gesture flow, not a per-node registry — and reset on
+  /// every arm so a stale observation from an earlier window never leaks into the next one. Feeds
+  /// the `io_device_type` prefill in the adoption report; see record_oneway_observed_class_().
+  struct OneWayObservedClass {
+    uint8_t node[NODE_ID_SIZE]{};
+    DeviceType type{DeviceType::UNKNOWN};
+    bool valid{false};
+  };
+  OneWayObservedClass oneway_last_observed_class_{};
   /// Whether diagnostic probes (ManagementActions::probe_device()/probe_sweep()) are enabled.
   /// False by default so a build that didn't opt in via `diagnostic_probes: true` never sends an
   /// undecoded probe opcode. See set_diagnostic_probes_enabled().
@@ -840,6 +1025,12 @@ class IOHomeControlComponent : public Component,
   PairingEngine pairing_engine_;          ///< Owns the three-phase device pairing flow.
   ManagementActions management_actions_;  ///< Owns rename, identify, force-open, scan_paired_devices, and other
                                           ///< hub-level HA actions.
+  /// Owns the 1W controller identities, their rolling-sequence counters and the transmit burst.
+  /// The third collaborator that drives the radio (ADR 0004), and the only one that awaits
+  /// nothing — 1W has no reply to wait for.
+  OneWayTransmitter oneway_transmitter_;
+  /// Subscribers to the per-command 1W report; one per "Last 1W Command" sensor.
+  std::vector<OneWayCommandReportFn> oneway_report_callbacks_;
 
   /// Identity of the last processed 1W frame, for burst suppression; see
   /// decisions::is_duplicate_1w_frame() for why the intent bytes are part of the key.

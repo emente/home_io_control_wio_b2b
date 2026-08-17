@@ -24,6 +24,12 @@ key-transfer frame whose payload does not decrypt to the corpus key is a hard fa
 the safety net that stops an un-re-keyed raw pairing capture (which would leak a real system
 key) from ever being committed, regardless of what its `key:` field claims (design §4.3).
 
+The same two-tier treatment applies to 1W: a CMD_ONEWAY_ADD_CONTROLLER (0x30) frame's `enc_key`
+directly encodes recoverable key material (wrapped only under the public TRANSFER_KEY, same as
+0x32), so it is checked unconditionally, same severity as the 0x32 check. Its optional
+out-of-length MAC trailer and every CMD_ONEWAY_REMOVE (0x39) frame's MAC do not encode the key
+directly, so they follow the 0x3D tier: enforced only for `key: corpus` captures.
+
 Run via `make corpus-validate` (part of the `lint` composite). Dependencies: PyYAML, cryptography.
 """
 
@@ -35,7 +41,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import CLASSIFICATION_ENUM  # noqa: E402
 import protolib  # noqa: E402
-from protolib import CTRL0_LENGTH_MASK, FRAME_MAX_SIZE, FRAME_MIN_SIZE, crc_ccitt  # noqa: E402
+from protolib import CTRL0_LENGTH_MASK, FRAME_MAX_SIZE, FRAME_MIN_SIZE, HMAC_SIZE, crc_ccitt  # noqa: E402
 from protolib import parse_hex as protolib_parse_hex  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -104,16 +110,27 @@ def validate_frame(frame: dict, index: int, capture_id: str) -> None:
         non_crc_len >= FRAME_MIN_SIZE,
         f"{context}: frame is {non_crc_len} bytes (excluding CRC), below FRAME_MIN_SIZE={FRAME_MIN_SIZE}",
     )
+    # A frame's non-CRC bytes are either exactly the CTRL0-declared length, or that length plus
+    # the out-of-length MAC trailer some 1W frames carry (a CMD 0x30 add-controller payload
+    # overflows CTRL0's 5-bit length field alongside its MAC — see
+    # reference_1w_vectors/oneway_add_controller_kat.yaml — so the MAC rides after the declared
+    # length instead, mirrored by proto_frame.cpp parse()'s two accepted shapes, IoFrame::has_mac).
+    # The declared length alone can never exceed FRAME_MAX_SIZE (CTRL0's 5-bit field), so the
+    # widest legal non_crc_len is FRAME_MAX_SIZE + HMAC_SIZE; this still hard-rejects a genuinely
+    # oversized or otherwise-malformed frame rather than going blind to it.
+    max_non_crc_len = FRAME_MAX_SIZE + HMAC_SIZE
     require(
-        non_crc_len <= FRAME_MAX_SIZE,
-        f"{context}: frame is {non_crc_len} bytes (excluding CRC), above FRAME_MAX_SIZE={FRAME_MAX_SIZE}",
+        non_crc_len <= max_non_crc_len,
+        f"{context}: frame is {non_crc_len} bytes (excluding CRC), above FRAME_MAX_SIZE+HMAC_SIZE={max_non_crc_len}",
     )
 
     ctrl0 = raw[0]
-    expected_total = (ctrl0 & CTRL0_LENGTH_MASK) + 1
+    expected_declared = (ctrl0 & CTRL0_LENGTH_MASK) + 1
+    has_mac_trailer = non_crc_len == expected_declared + HMAC_SIZE
     require(
-        expected_total == non_crc_len,
-        f"{context}: CTRL0 length bits imply {expected_total} bytes, but captured non-CRC length is {non_crc_len}",
+        expected_declared == non_crc_len or has_mac_trailer,
+        f"{context}: CTRL0 length bits imply {expected_declared} bytes (or {expected_declared + HMAC_SIZE} bytes "
+        f"with a MAC trailer), but captured non-CRC length is {non_crc_len}",
     )
 
     if crc_present:
@@ -184,6 +201,22 @@ def _non_crc_raw_frame(frame: dict) -> "protolib.RawFrame":
     return protolib.RawFrame(frame["dir"], raw.hex())
 
 
+# CMD_ONEWAY_ADD_CONTROLLER captures whose enc_key wraps a synthetic, publicly-published
+# (CC0-1.0) documentation example — `01020304050607080910111213141516` — rather than any real
+# device's key. `origin: reference-material` alone does not imply this (velux_kux100/
+# pairing_full.yaml is reference-material and still encodes a real installation's real key, so it
+# still had to be re-keyed); the distinction this set captures is specifically "is there a real
+# key behind these bytes".
+#
+# These captures' value is being byte-exact against their published source, so re-keying them
+# would defeat their purpose rather than protect anything — see oneway_add_controller_kat.yaml's
+# own description, and OneWayEnrollment.AddControllerReproducesPublishedVector / ProtoCrypto.
+# Create1wHmacMatchesPublishedAddControllerVector / ProtoCrypto.Crypt1wKeyMatchesPublishedAddControllerVector,
+# which all pin this exact vector by id. Add to this set only for a capture with the same
+# property: a synthetic, published example vector, checked and reasoned about individually.
+KNOWN_PUBLIC_VECTOR_IDS = {"reference_1w_add_controller_kat"}
+
+
 def validate_crypto(data: dict, capture_id: str) -> None:
     """Crypto enforcement — see module docstring. Frames are already known well-formed by the
     time this runs (validate_frame ran first), so CTRL0-implied length == actual length holds.
@@ -208,6 +241,23 @@ def validate_crypto(data: dict, capture_id: str) -> None:
             f"{capture_id}: SECURITY: a 0x32 key-transfer frame's payload does not decrypt to the public "
             "corpus key — this capture must be re-keyed (scripts/corpus/ingest.py --rekey) before it can "
             "ever be committed; committing it as-is would leak whatever real key it currently encodes",
+        )
+
+    # Same severity as the 0x32 check above, same reason: enc_key directly encodes recoverable key
+    # material, wrapped only under the public TRANSFER_KEY (see crypt_1w_key()'s doxygen). Checked
+    # unconditionally — a capture claiming `key: unknown` gets no pass here either — except the
+    # narrow, explicit KNOWN_PUBLIC_VECTOR_IDS allowlist (see its own comment for why).
+    for frame in protolib.find_oneway_add_controller_frames(frames):
+        if capture_id in KNOWN_PUBLIC_VECTOR_IDS:
+            continue
+        parts = protolib.oneway_add_controller_parts(frame)
+        unwrapped = protolib.crypt_1w_key(parts.src, parts.enc_key)
+        require(
+            unwrapped == protolib.CORPUS_SYSTEM_KEY,
+            f"{capture_id}: SECURITY: a 0x30 add-controller frame's enc_key does not unwrap to the public "
+            "corpus key — this capture must be re-keyed (scripts/corpus/ingest.py --rekey "
+            "--oneway-key-from <path>) before it can ever be committed; committing it as-is would leak "
+            "whatever real 1W controller key it currently encodes",
         )
 
     if data["key"] != "corpus":
@@ -242,6 +292,29 @@ def validate_crypto(data: dict, capture_id: str) -> None:
             f"{capture_id}: key: corpus promise broken — the HMAC half of a self-authenticated "
             f"0x{protolib.CMD_DISCOVER_SPE_REQ:02X} payload does not verify under the public corpus key "
             "(re-key it with scripts/corpus/ingest.py --rekey or rekey_capture.py)",
+        )
+
+    # 0x30's enc_key is already checked unconditionally above (and guaranteed, by that check
+    # having passed, to already unwrap to CORPUS_SYSTEM_KEY) — here only its optional trailer MAC
+    # (real Somfy hardware omits it — protolib.oneway_add_controller_parts()'s docstring) is
+    # checked, gated on key: corpus like every other MAC-only check in this function.
+    for frame in protolib.find_oneway_add_controller_frames(frames):
+        parts = protolib.oneway_add_controller_parts(frame)
+        if not parts.trailer:
+            continue
+        span = bytes([protolib.CMD_ONEWAY_ADD_CONTROLLER]) + parts.enc_key
+        require(
+            protolib.create_1w_hmac(span, parts.sequence, protolib.CORPUS_SYSTEM_KEY) == parts.trailer,
+            f"{capture_id}: key: corpus promise broken — a 0x30 add-controller frame's MAC trailer does not "
+            "verify under the public corpus key",
+        )
+
+    for frame in protolib.find_oneway_remove_controller_frames(frames):
+        parts = protolib.oneway_remove_controller_parts(frame)
+        require(
+            protolib.create_1w_hmac(parts.span, parts.sequence, protolib.CORPUS_SYSTEM_KEY) == parts.mac,
+            f"{capture_id}: key: corpus promise broken — a 0x39 remove-controller frame's MAC does not "
+            "verify under the public corpus key",
         )
 
 

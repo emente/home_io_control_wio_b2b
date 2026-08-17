@@ -41,6 +41,8 @@ constexpr const char *MANAGEMENT_ACTION_RENAME_DEVICE = "rename_device";
 constexpr const char *MANAGEMENT_ACTION_IDENTIFY_DEVICE = "identify_device";
 constexpr const char *MANAGEMENT_ACTION_FORCE_OPEN_DEVICE = "force_open_device";
 constexpr const char *MANAGEMENT_ACTION_SCAN_PAIRED_DEVICES = "scan_paired_devices";
+constexpr const char *MANAGEMENT_ACTION_ONEWAY_SET_POSITION = "oneway_set_position";
+constexpr const char *MANAGEMENT_ACTION_ONEWAY_REMOVE_CONTROLLER = "oneway_remove_controller";
 constexpr const char *MANAGEMENT_ACTION_PROBE_DEVICE = "probe_device";
 constexpr const char *MANAGEMENT_ACTION_PROBE_SWEEP = "probe_sweep";
 constexpr const char *MANAGEMENT_RESULT_EVENT = "esphome.home_io_control_action_result";
@@ -259,41 +261,6 @@ static ManagementActionResult make_management_result(const std::string &action, 
   return result;
 }
 
-/// @brief Log `prefix` followed by `message`, one line per log call rather than one call for the
-/// whole (possibly multi-line) string.
-///
-/// ESPHome formats each log call into a fixed 512-byte buffer (`ESPHOME_LOGGER_TX_BUFFER_SIZE`,
-/// esphome/core/defines.h) and silently truncates anything longer; scan_paired_devices()'s report
-/// exceeds that once it includes a YAML snippet, and would truncate mid-line if logged as a
-/// single call — confirmed on real hardware 2026-08-10, where a 3-device report cut off
-/// mid-snippet with no error and no indication anything was lost. Splitting by line keeps every
-/// individual call's payload small regardless of how long the full message is.
-/// The Home Assistant event (built from the same untruncated `std::string`, not from this log)
-/// is unaffected either way.
-/// @param tag        Log tag.
-/// @param is_warning True to log at WARN, false for INFO.
-/// @param prefix     Prepended to the message's first line only (e.g. "Management action X: ").
-/// @param message    Message to log; may contain embedded `\n` line breaks.
-static void log_multiline_result(const char *tag, bool is_warning, const std::string &prefix,
-                                 const std::string &message) {
-  size_t start = 0;
-  bool first = true;
-  while (true) {
-    const size_t end = message.find('\n', start);
-    const std::string line = (end == std::string::npos) ? message.substr(start) : message.substr(start, end - start);
-    const std::string out = first ? prefix + line : line;
-    if (is_warning) {
-      ESP_LOGW(tag, "%s", out.c_str());
-    } else {
-      ESP_LOGI(tag, "%s", out.c_str());
-    }
-    first = false;
-    if (end == std::string::npos || end + 1 >= message.size())
-      break;
-    start = end + 1;
-  }
-}
-
 /// @brief Decode a CMD_ERROR_RESP frame's result code into `result`.
 ///
 /// Populates has_result_code/result_code but deliberately leaves `result.message` untouched:
@@ -379,6 +346,19 @@ void ManagementActions::register_actions() {
   api::global_api_server->register_user_service(new detail::ManagementServiceDescriptor(  // NOLINT
       MANAGEMENT_ACTION_SCAN_PAIRED_DEVICES, {},
       [this](const api::ExecuteServiceRequest &) { this->api_scan_paired_devices(); }));
+  // `position` arrives as a string because ManagementServiceDescriptor exposes every argument as
+  // SERVICE_ARG_TYPE_STRING. Widening it to typed arguments would change a shipped API surface
+  // for one new parameter, so this action parses instead — and rejects loudly, since an
+  // unparseable position that silently became 0 would send a fully-open command.
+  api::global_api_server->register_user_service(new detail::ManagementServiceDescriptor(  // NOLINT
+      MANAGEMENT_ACTION_ONEWAY_SET_POSITION, {"controller_id", "position"},
+      [this](const api::ExecuteServiceRequest &request) {
+        this->api_oneway_set_position(request.args[0].string_.str(), request.args[1].string_.str());
+      }));
+  api::global_api_server->register_user_service(new detail::ManagementServiceDescriptor(  // NOLINT
+      MANAGEMENT_ACTION_ONEWAY_REMOVE_CONTROLLER, {"controller_id"}, [this](const api::ExecuteServiceRequest &request) {
+        this->api_oneway_remove_controller(request.args[0].string_.str());
+      }));
   // Registered only when diagnostic_probes: true was set in YAML, so the action list stays clean
   // on a default build -- diagnostic_probes_enabled() already holds its final YAML-configured
   // value here: __init__.py's to_code() emits set_diagnostic_probes_enabled() as a plain
@@ -453,7 +433,7 @@ void ManagementActions::publish_result(const ManagementActionResult &result) {
   if (has_device)
     prefix += " for device " + result.device_id;
   prefix += result.success ? ": " : " failed: ";
-  log_multiline_result(detail::TAG, !result.success, prefix, result.message);
+  detail::log_multiline_result(detail::TAG, !result.success, prefix, result.message);
 
   if (!hub_->is_connected())
     return;
@@ -619,6 +599,56 @@ ManagementActionResult ManagementActions::force_open_device(const std::string &d
 }
 
 void ManagementActions::api_scan_paired_devices() { publish_result(scan_paired_devices()); }
+
+void ManagementActions::api_oneway_set_position(const std::string &controller_id, const std::string &position) {
+  // device_id carries the controller-identity handle: 1W addresses a class, so there is no device
+  // to name, and the identity is what the caller actually chose.
+  ManagementActionResult result = make_management_result(MANAGEMENT_ACTION_ONEWAY_SET_POSITION, controller_id);
+
+  if (hub_->oneway_controllers().get(controller_id) == nullptr) {
+    result.message = "no oneway_controllers identity with that id";
+    publish_result(result);
+    return;
+  }
+
+  const std::string trimmed = trim_ascii_whitespace(position);
+  if (trimmed.empty() || trimmed.find_first_not_of("0123456789") != std::string::npos) {
+    result.message = "position must be a whole number between 0 and 100";
+    publish_result(result);
+    return;
+  }
+  const unsigned long parsed = strtoul(trimmed.c_str(), nullptr, 10);  // NOLINT(google-runtime-int)
+  if (parsed > ONEWAY_POSITION_FULLY_CLOSED) {
+    result.message = "position must be between 0 and 100";
+    publish_result(result);
+    return;
+  }
+
+  hub_->send_oneway_position(controller_id, static_cast<uint8_t>(parsed));
+  result.success = true;
+  // Deliberately "queued", not "sent" or "applied": 1W reports nothing back, and neither should
+  // this. See the "Last 1W Command" sensor for what was actually transmitted.
+  result.message = "1W position command queued";
+  publish_result(result);
+}
+
+void ManagementActions::api_oneway_remove_controller(const std::string &controller_id) {
+  // device_id carries the controller-identity handle, same convention as api_oneway_set_position().
+  ManagementActionResult result = make_management_result(MANAGEMENT_ACTION_ONEWAY_REMOVE_CONTROLLER, controller_id);
+
+  if (hub_->oneway_controllers().get(controller_id) == nullptr) {
+    result.message = "no oneway_controllers identity with that id";
+    publish_result(result);
+    return;
+  }
+
+  hub_->send_oneway_unenroll(controller_id);
+  result.success = true;
+  // "Queued", not "removed": 1W has no reply, so nothing here can ever confirm a device actually
+  // forgot this identity — same framing as every other 1W action result.
+  result.message = "1W remove-controller (0x39) queued";
+  publish_result(result);
+}
 
 /// @brief Format one roll-call responder's report line(s).
 ///

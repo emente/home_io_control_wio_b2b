@@ -116,6 +116,220 @@ bool create_force_open(IoFrame &f, const uint8_t *own, const uint8_t *dst, bool 
 /// @return true on success.
 bool create_private_function(IoFrame &f, const uint8_t *own, const uint8_t *dst, uint8_t function_id);
 
+// ============================================================================
+// 1W Execute (fire-and-forget class broadcast)
+// ============================================================================
+//
+// 1W has no reply and no challenge: a controller transmits once and the frame either lands or it
+// doesn't — there is no ACK to retry on and no 0x3C/0x3D to authenticate through, so the MAC
+// inside the payload (create_1w_hmac(), sequence-keyed rather than challenge-keyed) is the only
+// authentication a receiving device gets. The destination is a device *class*
+// (encode_broadcast_address(), proto_codecs.h), never an individual node — 1W has no addressed
+// unicast form at all. Both builders below are pure: they take `sequence` and `controller_key` as
+// parameters and neither increment, persist, nor look either up. The sequence store and the
+// identity registry that own those concerns (OneWayControllerRegistry, oneway_controller.h)
+// arrive in a later step; until then callers are responsible for supplying both.
+
+/// @brief Build a 1W position execute frame (CMD 0x00) targeting a device class.
+///
+/// Encodes a 0–100 position into the 2-byte main field (wire value is `2 * position`, matching
+/// the 2W numeric encoding) inside 1W's 6-byte "special" payload form — 1W uses this short form
+/// even for numeric positions, not the 8-byte layout create_execute_position() (2W) uses. The MAC
+/// span is command-specific (see create_1w_execute_command()'s doxygen); there is no default, so
+/// this builder assembles it itself via the shared internal helper.
+///
+/// @note Position 50 encodes as `2 * 50 = 0x64` on the wire, the same byte
+///       decode_1w_main_intent() labels POS_FORCE_OPEN when reading overheard traffic. That label
+///       is a decode-side diagnostic choice only (see POS_FORCE_OPEN in proto_constants.h) — it
+///       does not change what this builder sends or what a device does with it. Position 50 is an
+///       ordinary position command.
+/// @param f IoFrame to populate.
+/// @param src Our 3-byte controller node address (the 1W controller identity's `node_id`).
+/// @param target_type Device class to address; encoded via encode_broadcast_address().
+/// @param position Desired position 0–100 (0=fully open, 100=fully closed).
+/// @param sequence 2-byte rolling sequence for this transmission (big-endian on wire); the
+///        caller's identity/sequence store owns incrementing and persisting this, not this
+///        builder — see the section note above.
+/// @param controller_key 16-byte key held by the transmitting controller identity: the hub's own
+///        `system_key` for its own network, or a foreign key adopted via CMD 0x30 (Phase 3A "key
+///        adoption") when transmitting as an adopted identity.
+/// @return true on success; false if `position > 100` or if crypto::create_1w_hmac() fails — no
+///         partially-populated frame is left behind on failure.
+bool create_1w_execute_position(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint8_t position,
+                                uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE]);
+
+/// @brief Build a 1W named-command execute frame (CMD 0x00) targeting a device class.
+///
+/// Covers three of CoverCommand's values — STOP, FAVORITE, VENT. FORCE_OPEN is not handled here:
+/// the only wire code this project has for that label, POS_FORCE_OPEN (main=0x64), was
+/// hardware-tested as an outbound CMD_EXECUTE command and found to move a real device to 50%
+/// open, not bypass anything (see POS_FORCE_OPEN in proto_constants.h). There is no known 1W
+/// force-open encoding, so passing CoverCommand::FORCE_OPEN here falls to `default` and returns
+/// false, the same way create_execute_command()'s 2W dispatch rejects it.
+///   - STOP:       main=POS_STOP (0xD2),      modifier=0x00
+///   - FAVORITE:   main=POS_FAVORITE (0xD8),   modifier=0x00
+///   - VENT:       main=POS_FAVORITE (0xD8),   modifier=POS_VENT_MODIFIER (0x03)
+///
+/// @warning **These three do not rest on the same evidence, even though they read as a uniform
+/// list.** STOP is the only one a real frame pins: the published IV vector
+/// (tests/corpus/captures/reference_1w_vectors/oneway_execute_iv_vector.yaml) is a documented
+/// worked example carrying main=0xD2. VENT is not captured anywhere in this project, but it does
+/// match the reference implementation's own 1W remote byte-for-byte — `RemoteButton::Vent` in
+/// reference/iohomecontrol/src/iohcRemote1W.cpp emits exactly main=0xD8/mod=0x03. FAVORITE has
+/// neither kind of support: that same reference remote has no distinct favorite/My button at all
+/// (its RemoteButton set is Open/Close/Stop/Vent/ForceOpen/Position/Absolute/Pair/Add/Remove/
+/// Mode1-4 — no Favorite), so main=0xD8/mod=0x00 here is extrapolated purely by analogy with the
+/// 2W builder's FAVORITE encoding, with no source behind it at all. Worse, the one real capture
+/// this project has of an actual My/favorite button press —
+/// tests/corpus/captures/somfy_awning/oneway_remote_favorite_sx1276.yaml, pinned by
+/// `OneWayCommands.FavoriteButtonCaptureIsWritePrivateNotExecute` in tests/oneway_commands_test.cpp
+/// — contradicts it directly: that remote's My button is CMD_WRITE_PRIVATE (0x20) with a 16-byte
+/// payload, not CMD_EXECUTE with main=0xD8.
+///
+/// A real enrolled device does act on main=0xD8/mod=0x00, though: it changed the brightness of a
+/// Somfy Izymo dimmer, so the byte is accepted, not ignored. What position it targets — a stored
+/// "My" position vs. some fixed value — is unconfirmed; a 2W status-poll readback would settle
+/// it. Treat FAVORITE as "does something, target unverified", not "plausibly wrong".
+///
+/// FORCE_OPEN is deliberately absent rather than merely untested. The reference remote's
+/// `RemoteButton::ForceOpen` emits main=0x64/mod=0x00 — the same bytes this project labels
+/// POS_FORCE_OPEN — so it would "match the reference implementation byte-for-byte" the same way
+/// VENT does above. But matching the reference is not evidence it works: this project
+/// hardware-tested that exact main byte as an outbound CMD_EXECUTE and confirmed it moves a real
+/// device to 50% open (see POS_FORCE_OPEN in proto_constants.h), not past any lock. There is no
+/// known 1W encoding for a real force-open, so it is unimplemented rather than shipped on a
+/// mislabeled byte.
+///
+/// The MAC span is the 7 bytes `cmd, origin, acei, main0, main1, fp1, fp2` — the command byte
+/// through fp2, stopping before the sequence, which is not frame data and never enters the MAC.
+/// Pinned by the published IV vector at
+/// tests/corpus/captures/reference_1w_vectors/oneway_execute_iv_vector.yaml and by the reference
+/// implementation's own span (`toAdd = 6 + 1`, `reference/iohomecontrol/src/iohcRemote1W.cpp`).
+/// This span is command-specific and does not generalise: CMD 0x30's span is `cmd + enc_key`
+/// only — see crypto::create_1w_hmac()'s `@warning`.
+/// @param f IoFrame to populate.
+/// @param src Our 3-byte controller node address (the 1W controller identity's `node_id`).
+/// @param target_type Device class to address; encoded via encode_broadcast_address().
+/// @param cmd Named command to execute (STOP, FAVORITE, or VENT). CoverCommand::FORCE_OPEN
+///        returns false — see the @warning above.
+/// @param sequence 2-byte rolling sequence for this transmission (big-endian on wire); the
+///        caller's identity/sequence store owns incrementing and persisting this, not this
+///        builder — see the section note above.
+/// @param controller_key 16-byte key held by the transmitting controller identity: the hub's own
+///        `system_key` for its own network, or a foreign key adopted via CMD 0x30 (Phase 3A "key
+///        adoption") when transmitting as an adopted identity.
+/// @return true on success; false if `cmd` is CoverCommand::FORCE_OPEN (no 1W encoding exists) or
+///         if crypto::create_1w_hmac() fails.
+bool create_1w_execute_command(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, CoverCommand cmd,
+                               uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE]);
+
+// ============================================================================
+// 1W Enrollment (CMD 0x30 add-controller / CMD 0x39 remove-controller)
+// ============================================================================
+//
+// Enrollment is the precondition the two builders above assume away: a device obeys a 1W frame
+// only from a *registered* controller, so a correctly-keyed, correctly-signed execute from an
+// unknown source node is silently ignored (see ADR 0026). These two builders are how a
+// controller identity registers itself (0x30) or un-registers (0x39). Like the execute builders,
+// both are pure — `sequence` and `controller_key` are parameters, never looked up or persisted —
+// and both broadcast to the typed "all" address the same way create_1w_execute_command() does:
+// there is no addressed/unicast form, and for a virgin 1W-only device there is usually no address
+// to unicast to anyway.
+
+/// @brief Build a 1W add-controller frame (CMD 0x30) that registers this identity as a controller
+/// on every device of `target_type` currently in association mode — a physical 2 s PROG hold on
+/// the receiver, which only the device's owner can trigger (see ADR 0026).
+///
+/// The payload wraps `controller_key` for transmission rather than sending it in the clear:
+/// `enc_key = crypto::crypt_1w_key(src, controller_key)`, the same self-inverse primitive
+/// decode_1w_add_controller() uses to unwrap an overheard 0x30 (crypt_1w_key() is its own
+/// inverse, so this call and that one are literally the same function). The wrap key is the
+/// public TRANSFER_KEY
+/// (proto_constants.h) and the wrap IV derives only from `src` — see crypt_1w_key()'s doxygen for
+/// why that is not a weakness: the receiver decrypts `enc_key` first, then checks this frame's MAC
+/// under the key it just recovered, which is what makes the MAC meaningful (it proves the sender
+/// holds the key it just sent), not the wrap's secrecy.
+///
+/// Declared payload (20 bytes): `enc_key[16] + manufacturer[1] + data[1]=0x01 + sequence[2]`.
+/// **When `with_mac` is true, the MAC is an out-of-length trailer, not part of the declared
+/// payload** — CTRL0's 5-bit length field cannot express 29 declared bytes plus a 6-byte MAC
+/// together (see `IoFrame::has_mac`, `frame_carries_mac_trailer()` in proto_frame.h), so this
+/// builder sets `f.has_mac = true` and fills `f.mac[]` directly; `serialize()` appends it after
+/// the declared length and folds it into the length it returns, so a caller's CRC (computed over
+/// that return value) covers it automatically. **When present, this is the opposite placement
+/// from create_1w_remove_controller() below, whose MAC sits inside the declared payload** —
+/// copying one builder's shape to make the other is the most likely bug a future edit introduces
+/// here.
+///
+/// @warning **Real hardware and the published documentation vector disagree on whether the MAC
+/// trailer exists at all — this is why `with_mac` is a parameter, not a fixed choice.** The
+/// published `linklayer.md` vector (`with_mac=true`, 35 bytes) is what `with_mac` defaults to,
+/// for compatibility with that vector's own pinning tests. Most real hardware captures instead
+/// show 29 bytes with **no trailer at all** — see
+/// `tests/corpus/captures/somfy_awning/oneway_add_and_remove_controller_sx1276.yaml` — matching
+/// the reference `_p0x30` struct (`iohcPacket.h`, no `hmac` field). **The enroll button calls
+/// this with `with_mac=false`** to match that shape, but this is a preference rather than a
+/// hardware requirement: a real Somfy Izymo dimmer has separately been shown to accept the
+/// `with_mac=true` form as well, enrolling successfully and remaining controllable afterward —
+/// both shapes are safe to send.
+///
+/// @warning Reference divergences, deliberately not followed:
+/// `reference/iown-homecontrol`'s `create_key_transfer_1w` derives the key-wrap
+/// IV from the *destination* node, which contradicts the published frame this builder is pinned
+/// against (a broadcast destination carries no identity, so `src` is the only value that
+/// reproduces it); and its comment claims "key transfer carries no MAC", which the same published
+/// frame also contradicts (its MAC is genuine and verifies) — that claim is a coincidental match
+/// for what real hardware turned out to do, not evidence the comment's reasoning was right.
+/// @param f IoFrame to populate.
+/// @param src Our 3-byte controller node address (the 1W controller identity's `node_id`) — also
+///        the key-wrap IV's only input, so this must be the identity actually being registered.
+/// @param target_type Device class to address; encoded via encode_broadcast_address(). Only
+///        devices of this class currently in association mode react.
+/// @param manufacturer Manufacturer ID byte to advertise (`man_id`); echoed back verbatim by
+///        anything that later decodes this frame with decode_1w_add_controller().
+/// @param sequence 2-byte rolling sequence for this transmission (big-endian on wire); the caller's
+///        identity/sequence store owns incrementing and persisting this, not this builder.
+/// @param controller_key 16-byte key this identity registers itself with — normally the hub's own
+///        `system_key`, wrapped here for transmission, never sent in the clear.
+/// @param with_mac True to append the out-of-length MAC trailer (the published vector's shape,
+///        and this parameter's default for backward compatibility); false to omit it entirely
+///        (the shape most real hardware captures this project holds actually use, and what the
+///        enroll button passes). Real hardware has been shown to accept both — see the
+///        `@warning` above.
+/// @return true on success; false if crypto::crypt_1w_key() fails, or (when `with_mac` is true)
+///         crypto::create_1w_hmac() fails — no partially-populated frame is left behind on failure.
+bool create_1w_add_controller(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint8_t manufacturer,
+                              uint16_t sequence, const uint8_t controller_key[AES_KEY_SIZE], bool with_mac = true);
+
+/// @brief Build a 1W remove-controller frame (CMD 0x39) that un-registers this identity from every
+/// device of `target_type` currently in association mode — the un-enroll counterpart to
+/// create_1w_add_controller(), and (per the documented `0x39` → `0x30` flow) also its optional
+/// prelude.
+///
+/// Declared payload (9 bytes), shape matching the reference `_p0x2e` struct: `data[1]=0x00 +
+/// sequence[2] + mac[6]`. **The MAC sits inside the declared payload here** — the opposite
+/// placement from create_1w_add_controller() above, whose MAC is an out-of-length trailer because
+/// its longer payload has no room left in CTRL0's 5-bit length field. `f.has_mac` stays false.
+///
+/// The MAC span is `cmd + data` (2 bytes) — the same "everything before the sequence" shape CMD
+/// 0x00's span follows, though spans are command-specific and do not generalise on their own (see
+/// create_1w_hmac()'s `@warning`; CMD 0x30's span is `cmd + enc_key`, a different rule). This one
+/// is verified against real captures, not merely plausible: every `0x39` frame in
+/// `tests/corpus/captures/somfy_awning/oneway_add_and_remove_controller_sx1276.yaml` verifies
+/// under this exact span, and `scripts/corpus/validate.py` re-checks that on every corpus
+/// validation run — a regression here would fail `make corpus-validate`, not just look wrong.
+/// @param f IoFrame to populate.
+/// @param src Our 3-byte controller node address (the 1W controller identity's `node_id`).
+/// @param target_type Device class to address; encoded via encode_broadcast_address().
+/// @param sequence 2-byte rolling sequence for this transmission (big-endian on wire); the caller's
+///        identity/sequence store owns incrementing and persisting this, not this builder.
+/// @param controller_key 16-byte key held by the identity being removed — the same key
+///        create_1w_execute_command()/create_1w_add_controller() would use for this identity.
+/// @return true on success; false if crypto::create_1w_hmac() fails — no partially-populated frame
+///         is left behind on failure.
+bool create_1w_remove_controller(IoFrame &f, const uint8_t src[NODE_ID_SIZE], DeviceType target_type, uint16_t sequence,
+                                 const uint8_t controller_key[AES_KEY_SIZE]);
+
 /// Build a get‑status request (0x03). The device responds with its current position.
 /// @param f IoFrame to populate.
 /// @param own Controller's 3‑byte node ID.

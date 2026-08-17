@@ -10,7 +10,7 @@
 #include <cstring>
 
 /// @file hub_key_extraction.cpp
-/// @brief "Accept Foreign Pairing (Key Extraction)" — device-role responder hub wiring.
+/// @brief "Recover System Key" (key extraction) — device-role responder hub wiring.
 /// @ingroup hioc_hub
 ///
 /// Owns the impure side of the key-extraction feature: arming/disarming, throwaway node-ID
@@ -62,19 +62,6 @@ constexpr uint8_t KEY_EXTRACTION_ADVERTISED_SUBTYPE = 0;
 constexpr uint8_t KEY_EXTRACTION_ID_GEN_MAX_ATTEMPTS = 16;  ///< Collision-retry budget for the throwaway node ID.
 constexpr const char *KEY_EXTRACTION_TIMEOUT_NAME = "key_extraction_auto_off";
 constexpr uint32_t RANDOM_LOW_BYTE_MASK = 0xFF;  ///< Isolates one random byte from esp_random()'s 32-bit output.
-
-/// Format a 16-byte key as an uppercase hex string. The one deliberate place system-key bytes
-/// are formatted for display — see log_key_extraction_result_() and redaction.h.
-std::string format_key_hex(const uint8_t key[AES_KEY_SIZE]) {
-  std::string out;
-  out.reserve(AES_KEY_SIZE * 2);
-  char byte_buf[3];
-  for (uint8_t i = 0; i < AES_KEY_SIZE; i++) {
-    snprintf(byte_buf, sizeof(byte_buf), "%02X", key[i]);
-    out += byte_buf;
-  }
-  return out;
-}
 
 }  // namespace
 
@@ -261,22 +248,19 @@ void IOHomeControlComponent::handle_key_extraction_key_transfer_(const IoFrame &
 // ships marked experimental. The key is still always printed (gating it on an equally-unverified
 // secondary check risks hiding a correct key), but the log below says so.
 void IOHomeControlComponent::log_key_extraction_result_() {
-  const std::string node_id_str = node_id_to_string(this->key_extraction_ctx_.hub_node_id);
-  const std::string key_str = format_key_hex(this->key_extraction_ctx_.recovered_key);
   // Deliberate, explicit exception to redaction.h's masking — see that file and README.md's
   // "Reporting Unsupported Devices" section, which already warns about pairing logs and the
   // shared TRANSFER_KEY in almost identical terms. Do NOT route this through the generic
   // frame-log helpers (log_frame()/log_component_capture()); those must keep masking 0x32.
+  //
+  // Logged line-by-line via log_multiline_result(), not as one ESP_LOGW("%s", ...) call: a single
+  // call silently truncates at ESPHome's 512-byte log buffer -- see that function's doxygen
+  // (hub_internal.h) for the root cause, and build_oneway_adoption_report()'s caller for the
+  // identical reasoning on the 1W path.
   ESP_LOGW(detail::TAG, "========================================");
-  ESP_LOGW(detail::TAG, "SYSTEM KEY EXTRACTED -- DO NOT SHARE YOUR SYSTEM KEY");
-  ESP_LOGW(detail::TAG, "Anyone with this key and node_id can control every device on this installation.");
-  ESP_LOGW(detail::TAG, "This exchange has not been independently confirmed against your specific hub -- test");
-  ESP_LOGW(detail::TAG, "this key (e.g. by controlling a device with it) before relying on it.");
-  ESP_LOGW(detail::TAG, "Copy the block below into a new hub's YAML.");
-  ESP_LOGW(detail::TAG, "========================================");
-  ESP_LOGW(detail::TAG, "home_io_control:");
-  ESP_LOGW(detail::TAG, "  node_id: \"%s\"", node_id_str.c_str());
-  ESP_LOGW(detail::TAG, "  system_key: \"%s\"", key_str.c_str());
+  detail::log_multiline_result(detail::TAG, /*is_warning=*/true, /*prefix=*/"",
+                               detail::build_key_extraction_report(this->key_extraction_ctx_.hub_node_id,
+                                                                   this->key_extraction_ctx_.recovered_key));
   ESP_LOGW(detail::TAG, "========================================");
 }
 
