@@ -245,19 +245,6 @@ inline bool defer_background_poll_for_1w_activity(bool next_op_is_background, ui
   return last_1w_activity_ms == 0 || (now - last_1w_activity_ms) >= quiet_ms;
 }
 
-// == Timing/slicing helper ==
-
-/// Slice remaining wait time into bounded intervals to allow frequency hopping.
-///
-/// The wait loops (exchange and pairing) use this to avoid blocking the radio
-/// for too long without hopping. Each slice is at most RESPONSE_CHANNEL_WAIT_MS.
-///
-/// @param remaining_ms Total time left in the wait window.
-/// @return Time slice to wait in milliseconds.
-inline uint32_t response_wait_slice_ms(uint32_t remaining_ms) {
-  return std::min<uint32_t>(remaining_ms, RESPONSE_CHANNEL_WAIT_MS);
-}
-
 }  // namespace decisions
 }  // namespace home_io_control
 }  // namespace esphome

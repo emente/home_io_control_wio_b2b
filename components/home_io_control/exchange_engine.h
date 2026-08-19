@@ -112,8 +112,12 @@ class ExchangeEngine {
   /// informational only (see the caller's protocol notes). Every candidate packet is parsed
   /// and checked against `expected_cmd` and `node_id_` (as the frame's destination); anything
   /// that fails `parse()`, carries a different `cmd`, or is not addressed to us is ignored
-  /// without ending collection. Silence on a slice hops to the next channel, exactly like
-  /// wait_for_first_response_(), so replies arriving on any of the three channels are caught.
+  /// without ending collection. The receiver leaves the request channel before the first
+  /// listen and alternates between the other two for the rest of the window — unlike
+  /// wait_for_first_response_(), which holds the request channel for the whole wait — because a
+  /// broadcast reply does not come back on the channel that asked for it (1 of 149 measured),
+  /// while a unicast reply does. Replies on the request channel are therefore not caught by this
+  /// loop.
   ///
   /// This method stores nothing and imposes no capacity: it neither buffers replies nor
   /// deduplicates them, so the same responder answering twice within one window invokes
@@ -137,6 +141,35 @@ class ExchangeEngine {
   uint8_t collect_broadcast_responses(const IoFrame &request, uint32_t freq, uint8_t expected_cmd, uint32_t window_ms,
                                       const BroadcastReplyHandler &on_reply);
 
+  /// @brief The one listen primitive every radio wait loop in this project is built on.
+  ///
+  /// Listens for up to `spec.window_ms`, applying `spec.policy` (hold the current channel, rotate
+  /// all three, or rotate skipping the request channel), and hands every packet the radio
+  /// delivers to `on_frame` before deciding whether to keep waiting. See @ref ListenPolicy for the
+  /// measurements behind each policy and @ref ListenSpec for what each field controls.
+  ///
+  /// Parses each received packet into `frame`, so on ListenOutcome::ACCEPTED the caller's `frame`
+  /// already holds the accepted frame and `packet` already holds its raw bytes — no copy is
+  /// needed. A packet that fails to parse is still handed to `on_frame` (with a null `parsed`
+  /// pointer), so a caller that wants to log or count unparsable frames still can.
+  ///
+  /// Any richer result than accept/refuse/timeout — a disposition with more than three values, a
+  /// captured "did we see any traffic at all" flag — is the caller's business: capture it in
+  /// `on_frame`'s closure and return ACCEPT/IGNORE. `ListenOutcome` itself never grows a fourth
+  /// value; that is how a shared primitive would turn back into one loop per caller.
+  ///
+  /// @param spec    How this listen window is to be spent.
+  /// @param packet  Scratch space for the whole listen: holds the last received packet on
+  ///   return. On ACCEPTED that is the accepted packet; on ABORTED, the one `on_frame` refused;
+  ///   on TIMED_OUT, whatever arrived last (or the caller's initial value, if nothing did).
+  /// @param frame   Same lifetime as `packet`, parsed from it: holds the last received frame on
+  ///   return, with the same ACCEPTED/ABORTED/TIMED_OUT correspondence as `packet` above.
+  /// @param on_frame Invoked for every packet the radio delivers; decides whether to accept,
+  ///   abort, or keep listening. See @ref ReplyHandler.
+  /// @return ACCEPTED or ABORTED as `on_frame` decided, or TIMED_OUT if `spec.window_ms` elapsed
+  ///   first.
+  ListenOutcome listen(const ListenSpec &spec, RadioRxPacket &packet, IoFrame &frame, const ReplyHandler &on_frame);
+
   // -------------------------------------------------------------------------
   // Infrastructure delegated from the hub
   // -------------------------------------------------------------------------
@@ -148,9 +181,11 @@ class ExchangeEngine {
   /// @return true if the radio accepted the packet; false otherwise.
   bool transmit_frame(const IoFrame &frame, uint32_t freq, uint16_t preamble);
 
-  /// Advance to the next IO-Homecontrol channel (CH1→CH2→CH3→CH1).
-  /// Respects the protocol-defined minimum dwell time (HOP_TIME_US).
-  void hop_frequency();
+  /// @brief Advance the receiver one step along the protocol's channel rotation
+  ///   (CH1→CH2→CH3→CH1).
+  /// @param skip_freq Channel to pass over, or 0 to rotate through all three. Used by the
+  ///   broadcast roll-call, whose replies never come back on the channel that asked.
+  void hop_frequency(uint32_t skip_freq = 0);
 
   /// Unconditionally hop only if the minimum dwell has elapsed.
   /// Called from the hub's `loop()` to honour passive channel scanning.
@@ -204,6 +239,16 @@ class ExchangeEngine {
   [[nodiscard]] const DebugInfo &get_debug() const { return debug_; }
 
  private:
+  // --- listen() helper -------------------------------------------------------
+
+  /// Retune per `skip` (see hop_frequency()) and fire `spec.on_hop` if set. Factored out of
+  /// listen() purely to keep that function's cognitive complexity under the clang-tidy
+  /// threshold — a member function call doesn't add to the caller's complexity the way an
+  /// inline lambda definition does.
+  /// @param skip Channel to pass over, or 0 to rotate through all three — see hop_frequency().
+  /// @param spec The listen this hop belongs to; only `on_hop` is read.
+  void listen_hop_(uint32_t skip, const ListenSpec &spec);
+
   // --- Outbound exchange step helpers --------------------------------------
 
   /// Transmit one request attempt and update context state on failure.

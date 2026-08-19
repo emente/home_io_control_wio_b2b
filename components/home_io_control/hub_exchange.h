@@ -28,10 +28,16 @@
 /// Both paths rely on the HMAC construction defined in proto_crypto.h which uses
 /// AES-128-ECB to encrypt an IV derived from the original frame bytes and a
 /// 6-byte random challenge.
+///
+/// This header also defines the shared listen primitive's types (ListenPolicy,
+/// ReplyDisposition, ListenOutcome, ReplyHandler, ListenSpec) — the single channel-policy-aware
+/// wait loop both ExchangeEngine's outbound waits and PairingEngine's waits are built on. See
+/// ExchangeEngine::listen() (exchange_engine.h) for the loop itself.
 
 #include "proto_frame.h"
 #include "radio_interface.h"
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace esphome {
@@ -84,6 +90,91 @@ struct InboundAuthContext {
 };
 
 }  // namespace exchange
+
+/// @brief Which channels a listen covers.
+///
+/// A property of what is being waited for, not of the radio: a unicast reply comes back on the
+/// channel the request went out on (measured on every unicast pairing reply captured — the 0x33
+/// in all three dimmer pairing captures across three chips at 4-41 ms, every 0x3C challenge, both
+/// field-logged 0xFE error replies at 20 ms, 12/12 hardware pairing trials across two chips), while
+/// a reply to a broadcast does not (1 of 149 roll-call replies measured, against the ~1 in 3 an
+/// even split would give). Shared by @ref ExchangeEngine::listen() and, prospectively, any other
+/// caller that waits for a radio reply — hence living beside the primitive rather than folded into
+/// one loop's local logic.
+enum class ListenPolicy : uint8_t {
+  HOLD_REQUEST_CHANNEL,     ///< Never retunes, never slices. Unicast replies.
+  ROTATE_ALL_CHANNELS,      ///< CH1->CH2->CH3->CH1. Broadcast whose reply channel is unknown.
+  ROTATE_SKIPPING_REQUEST,  ///< The two channels that are not the request channel. Roll-call.
+};
+
+/// @brief What the caller wants done with the frame a listen just received.
+enum class ReplyDisposition : uint8_t {
+  ACCEPT,  ///< This is the frame the caller was waiting for — stop listening, return ACCEPTED.
+  IGNORE,  ///< Unparsable / not ours / wrong exchange — keep listening.
+  ABORT,   ///< An explicit refusal (e.g. CMD_ERROR_RESP) — stop listening, return ABORTED.
+};
+
+/// @brief How one call to @ref ExchangeEngine::listen() ended.
+enum class ListenOutcome : uint8_t {
+  ACCEPTED,   ///< The handler returned ReplyDisposition::ACCEPT for some received frame.
+  ABORTED,    ///< The handler returned ReplyDisposition::ABORT for some received frame.
+  TIMED_OUT,  ///< `spec.window_ms` elapsed with no ACCEPT/ABORT.
+};
+
+/// @brief Invoked for every packet the radio delivers during a listen, before the listen decides
+/// whether to keep waiting.
+///
+/// @param parsed Points at the caller's own output frame, already filled by `parse()`; nullptr
+///   when `parse()` rejected the packet (the exchange waits log that case, the pairing waits do
+///   not).
+/// @param packet The raw packet, for length/frequency logging.
+/// @return What the listen should do next — see @ref ReplyDisposition.
+///
+/// Keep captures to a few pointers: small callables avoid `std::function`'s heap fallback on the
+/// implementations this project builds against.
+using ReplyHandler = std::function<ReplyDisposition(const IoFrame *parsed, const RadioRxPacket &packet)>;
+
+/// @brief How one listen window is to be spent — everything @ref ExchangeEngine::listen() needs;
+/// everything else is the handler's business.
+struct ListenSpec {
+  uint32_t window_ms{0};                                    ///< Total time budget for this listen, in milliseconds.
+  ListenPolicy policy{ListenPolicy::HOLD_REQUEST_CHANNEL};  ///< Which channels this listen covers.
+  /// Channel the request went out on (Hz). Required by ListenPolicy::ROTATE_SKIPPING_REQUEST,
+  /// where it names the channel to leave before the first listen; ignored by the other policies.
+  uint32_t request_freq{0};
+  /// Per-channel dwell for the ROTATE_* policies, in milliseconds; ignored by
+  /// ListenPolicy::HOLD_REQUEST_CHANNEL. **0 (the default) means "ask the driver"** —
+  /// `listen()` falls back to `radio->hop_dwell_ms(tuning)`, the chip's own answer to "how long
+  /// must this radio sit on a channel before it can hear anything at all". Every ROTATE_* call
+  /// site today leaves this at 0: discovery and the broadcast roll-call have no measured reason to
+  /// dwell differently from each other. A non-zero value is reserved for the rare case where one
+  /// listen *does* have a measured reason to dwell differently from the others on every chip — a
+  /// difference that is per-chip and per-loop, not just per-chip, is the only thing that justifies
+  /// it; that measurement doesn't exist for any call site today. Not a tuning knob either way: a
+  /// constant at the call site, never user-configurable.
+  uint32_t dwell_ms{0};
+  /// Hop after a frame the handler ignored. Only discovery sets this true (the default): a
+  /// broadcast discovery window is full of unrelated traffic and the reply channel is unknown, so
+  /// an ignored frame there is no reason to keep spending the window on this channel. The
+  /// roll-call is the one rotating listen that sets this false — a reception is positive evidence
+  /// the other way: it proves responders are on this channel, and replies arrive spread across the
+  /// whole window, so staying put costs nothing.
+  bool hop_after_ignored_frame{true};
+  /// Extend the listen instead of hopping while the chip reports a preamble or sync word, so an
+  /// arriving frame is not cut off mid-reception. Set by both rotating listens (pairing discovery
+  /// and the broadcast roll-call) — SX1276's 5 ms rotating dwell is shorter than one frame's air
+  /// time, so without this guard nearly every reply is cut off mid-retune (hardware-measured
+  /// 2026-08-19). On SX1262 the preamble half of the guard is masked off in the driver's IRQ set,
+  /// so it buys only the sync half there until that changes.
+  bool linger_on_preamble{false};
+  /// Length of the preamble/sync extension, in milliseconds. Deliberately shorter than a dwell on
+  /// the slow-hopping chips and longer than one on the fast-hopping chip: it is sized to a frame's
+  /// air time, not to a hop.
+  uint32_t linger_dwell_ms{0};
+  /// Called on every hop, for callers that count hops in their own telemetry (pairing does; the
+  /// exchange loops do not). Empty by default, in which case no callback fires.
+  std::function<void()> on_hop;
+};
 
 }  // namespace home_io_control
 }  // namespace esphome
