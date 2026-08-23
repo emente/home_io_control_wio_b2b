@@ -364,9 +364,32 @@ bool SoftPhyDriverBase::check_for_packet(RadioRxPacket &packet) {
     // from maybe_hop() would not work here: the clear_irq_status() call right below has already
     // dropped the sync bit by the time maybe_hop() could look at it, so the observation has to be
     // captured now, before it disappears. The holdoff expires on its own; see RX_HOP_HOLDOFF_US.
+    //
+    // Past the holdoff arm above, finish the reception here instead of leaving it to the RX_DONE
+    // ~10 ms away and a loop() pass after that (issue #81, Mechanism B). sync_us is timestamped now,
+    // not when the sync word actually landed on air, so it can be a whole loop period stale — that
+    // only ever makes wait_for_air_time() (inside try_early_completion_()) wait longer than the
+    // frame needed, never shorter, so reading the buffer late is harmless while reading it early
+    // would not be. Timestamped before the SPI clear below for the same reason resolve_sync_race_()
+    // does it: keep the reference as close to the on-air event as this loop can see.
+    uint32_t const sync_us = micros();
+    uint32_t const start_ms = millis();
     this->note_reception_in_progress_();
     this->clear_irq_status(this->sync_word_valid_bit());
-    return false;
+    // Falling through here is not a lost frame: try_early_completion_()'s failure paths issue only
+    // reads; nothing re-arms, retunes, or clears an IRQ, so the caller is free to fall back to the
+    // ordinary RX_DONE path. try_early_completion_() can itself block for up to
+    // idle_rx_completion_budget_ms() (~9.4 ms worst case), which eats into the holdoff armed above
+    // before this function even returns — on the fall-through path, re-arm it fresh right here so
+    // maybe_hop() (a few lines up the caller's stack in loop()) still sees the full holdoff window
+    // instead of whatever fraction survived this call, and can't retune under a frame whose RX_DONE
+    // hasn't been read yet. The success path does not need this: try_early_completion_() already
+    // clears the holdoff itself via reset_rx_state_() once the frame is fully recovered.
+    bool const completed =
+        this->try_early_completion_(packet, sync_us, irq, start_ms, this->idle_rx_completion_budget_ms());
+    if (!completed)
+      this->note_reception_in_progress_();
+    return completed;
   }
 
   if ((irq & this->rx_done_bit()) != 0) {

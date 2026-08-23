@@ -64,6 +64,20 @@ static constexpr uint32_t SOFT_PHY_EARLY_POLL_US = 100;
 /// early path from spending a short window's whole budget on a receive it cannot complete.
 static constexpr uint32_t SOFT_PHY_EARLY_MIN_WINDOW_MS = 12;
 
+/// Blocking budget @ref SoftPhyDriverBase::check_for_packet gives a length-driven receive, in
+/// milliseconds — the `timeout_ms` passed to `try_early_completion_()` from the non-blocking
+/// idle-loop RX path (issue #81). The real bound on how long that call can block is the frame's
+/// own air time (~9.4 ms worst case, see @ref SOFT_PHY_EARLY_MIN_WINDOW_MS), not this number; this
+/// value only has to be large enough not to cut a genuine frame short. It is not itself a tight
+/// bound on loop() latency — the actual air time is what stays well inside a loop() tick
+/// (~16-30 ms) — and either way it is dwarfed by the 1-3 s a blocking exchange already costs
+/// `loop()`.
+static constexpr uint32_t SOFT_PHY_IDLE_RX_COMPLETION_BUDGET_MS = 20;
+
+static_assert(SOFT_PHY_IDLE_RX_COMPLETION_BUDGET_MS >= SOFT_PHY_EARLY_MIN_WINDOW_MS,
+              "a budget below the minimum window makes try_early_completion_() decline every "
+              "idle-path call, silently turning issue #81's fix into a no-op");
+
 /// Protocol line rate. The same 38400 bps every driver programs into its own bitrate register.
 static constexpr uint32_t SOFT_PHY_LINE_RATE_BPS = 38400;
 /// Microseconds in a second, for the air-time arithmetic below.
@@ -182,6 +196,16 @@ class SoftPhyDriverBase : public RadioDriver {
   /// address it programs in configure_buffer_base(), which is where a single in-flight packet
   /// always starts. LR1121 is left on the RX_DONE path pending hardware validation.
   [[nodiscard]] virtual int16_t early_rx_read_offset() const { return -1; }
+
+  /// @brief Blocking budget for the idle-path length-driven receive, in milliseconds (issue #81).
+  ///
+  /// Virtual only so tests can widen it. The host clock stubs advance `millis()`/`micros()` by one
+  /// unit per call (`tests/include/esphome/core/hal.h`), so a frame's few thousand microseconds of
+  /// air time also burns a few thousand fake milliseconds — any production-sized budget expires
+  /// inside `wait_for_air_time()`'s first stage and the whole path becomes untestable. The existing
+  /// blocking-path early-completion tests dodge this by passing `wait_for_packet()` a 20000 ms
+  /// timeout; this path has no caller-supplied timeout to widen, so the seam has to live here.
+  [[nodiscard]] virtual uint32_t idle_rx_completion_budget_ms() const { return SOFT_PHY_IDLE_RX_COMPLETION_BUDGET_MS; }
 
   /// Set RF frequency via the chip's own frequency register/opcode encoding, and update
   /// `current_freq_`. Called from both @ref change_frequency and the shared `send_packet()`.
