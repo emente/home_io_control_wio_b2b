@@ -225,8 +225,13 @@ void SoftPhyDriverBase::rearm_rx_after_tx_() {
   // destroyed by transmitting over it, and RX is genuinely re-arming here same as it does through
   // reset_rx_state_() — unlike that call's SetStandby/buffer-base work, clearing the flag costs
   // nothing, so there is no reason to leave it stale on this path.
+  //
+  // invalidate_stale_rx_content_after_tx() is the same shape: no-op on SX1262 (its buffer split
+  // already keeps TX content away from where a length-driven receive reads), so this path pays
+  // nothing extra there; only LR1121, whose shared buffer needs it, does real work here.
   this->clear_reception_in_progress_();
   this->clear_irq_status(0xFFFFFFFF);
+  this->invalidate_stale_rx_content_after_tx();
   this->set_rx_packet_params();
   this->set_mode_rx();
 }
@@ -278,8 +283,12 @@ bool SoftPhyDriverBase::read_rx_packet(RadioRxPacket &packet, bool blocking_wait
     memcpy(packet.data, recovered_buf, probe.frame_len);
     packet.len = probe.frame_len;
 #ifdef IOHOME_FRAME_LOG
-    ESP_LOGD(TAG, "UART probe: valid=1 bit_offset=%u frame_start=%u frame_len=%u decoded_len=%u", probe.bit_offset,
-             probe.frame_start, probe.frame_len, probe.decoded_len);
+    // rx_offset is the chip-reported buffer offset this reception was read from — logged here
+    // (issue #81) because it is otherwise populated by every driver's fill_capture_info() and read
+    // by nothing, and it is the one fact that would confirm or correct LR1121_RX_BUFFER_BASE
+    // against a real LR1121 (see RadioLR1121::early_rx_read_offset's doc comment).
+    ESP_LOGD(TAG, "UART probe: valid=1 bit_offset=%u frame_start=%u frame_len=%u decoded_len=%u rx_offset=%u",
+             probe.bit_offset, probe.frame_start, probe.frame_len, probe.decoded_len, rx_offset);
 #endif
   } else {
 #ifdef IOHOME_FRAME_LOG

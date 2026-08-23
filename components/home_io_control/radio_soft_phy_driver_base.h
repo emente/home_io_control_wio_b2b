@@ -194,7 +194,9 @@ class SoftPhyDriverBase : public RadioDriver {
   ///
   /// Default is -1: wait for RX_DONE exactly as before. SX1262 overrides it with the RX base
   /// address it programs in configure_buffer_base(), which is where a single in-flight packet
-  /// always starts. LR1121 is left on the RX_DONE path pending hardware validation.
+  /// always starts. LR1121 also opts in, at the base of its one shared TX/RX buffer — see
+  /// RadioLR1121::early_rx_read_offset for why a wrong guess there is safe only in combination
+  /// with @ref invalidate_stale_rx_content_after_tx.
   [[nodiscard]] virtual int16_t early_rx_read_offset() const { return -1; }
 
   /// @brief Blocking budget for the idle-path length-driven receive, in milliseconds (issue #81).
@@ -239,6 +241,25 @@ class SoftPhyDriverBase : public RadioDriver {
   /// @brief Hook run as part of @ref reset_rx_state_, before re-entering RX. No-op by default;
   /// SX1262 overrides this to (re-)write its buffer base address, which LR1121 doesn't need.
   virtual void configure_buffer_base() {}
+  /// @brief Hook run from @ref rearm_rx_after_tx_, after a transmission and before re-entering RX.
+  /// No-op by default.
+  ///
+  /// SX1262 has a real address split written once at init (@ref configure_buffer_base): TX always
+  /// builds at its own base, RX always lands at a different one, so nothing a transmission wrote
+  /// can ever appear where a length-driven receive (@ref early_rx_read_offset) later reads from.
+  /// LR1121 has no such split — one shared 256-byte buffer for both directions, and `WriteBuffer`
+  /// always starts from the buffer base (see `write_buffer_`'s doc comment) — so after every LR1121
+  /// transmission, the offset a length-driven receive will read from holds a real, CRC-valid,
+  /// UART-encoded copy of the hub's own last-sent frame. That is not noise: if
+  /// `early_rx_read_offset()`'s offset guess ever turns out to be wrong, reading that residue back
+  /// would pass every stage of `try_early_completion_()` and hand back the hub's own transmission as
+  /// a phantom received packet — worse than doing nothing, since `check_for_packet()` would then
+  /// tear down and re-arm RX (issue #81's `force_standby` path) over whatever real reception was
+  /// actually in progress. RadioLR1121 overrides this to overwrite that offset with a few
+  /// non-frame-shaped bytes after every TX, so a wrong offset guess degrades back to reading genuine
+  /// garbage — which correctly fails the length-driven receive's stage 1 or stage 3 — instead of a
+  /// valid-looking phantom frame.
+  virtual void invalidate_stale_rx_content_after_tx() {}
 
  private:
   // === wait_for_packet/check_for_packet state-machine helpers (private) ===
