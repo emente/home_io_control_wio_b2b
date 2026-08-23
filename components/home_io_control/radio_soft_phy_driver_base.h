@@ -80,6 +80,15 @@ constexpr uint32_t soft_phy_air_time_us(uint32_t raw_bytes) {
   return (bit_periods + SOFT_PHY_LINE_RATE_BPS - 1) / SOFT_PHY_LINE_RATE_BPS;
 }
 
+// RX_HOP_HOLDOFF_US (radio_interface.h) exists to outlast the fixed-length RX_DONE on the
+// software-PHY chips. Tied here, in the one header that can see both sides of the arithmetic,
+// so a change to either constant that breaks the relationship fails the build instead of
+// silently turning issue #81's gate back into the bug it fixes.
+static_assert(RX_HOP_HOLDOFF_US >= soft_phy_air_time_us(SOFT_PHY_RX_PROBE_PACKET_LEN),
+              "the hop holdoff must outlast the fixed-length RX_DONE it exists to wait for — a "
+              "shorter bound lets the hop fire while the frame it is protecting is still on air, "
+              "silently turning issue #81's gate back into the bug");
+
 /// @brief Shared RX/TX driver flow for the software-PHY radios (SX1262, LR1121).
 /// @ingroup hioc_radio
 class SoftPhyDriverBase : public RadioDriver {

@@ -41,6 +41,10 @@ class TestableRadioLR1121 : public RadioLR1121 {
   // transaction/parsing against a ScriptedSpi.
   uint32_t call_real_read_irq_status_raw() { return RadioLR1121::read_irq_status_raw(); }
 
+  // Arm the hop holdoff directly — exposed here since note_reception_in_progress_() is protected
+  // on RadioDriver.
+  void note_reception_from_test() { this->note_reception_in_progress_(); }
+
  protected:
   uint32_t read_irq_status_raw() override {
     if (irq_idx_ < irq_seq_.size()) {
@@ -618,6 +622,60 @@ TEST(RadioLR1121, CheckForPacketSyncWithoutRxDoneClearsIrqAndReturnsFalse) {
   EXPECT_FALSE(ok) << "SYNC_WORD_VALID without RX_DONE is not a complete packet yet";
   int clear_idx = spi.find_opcode(LR1121_CMD_CLEAR_IRQ);
   EXPECT_GE(clear_idx, 0) << "the sticky SYNC flag must be cleared so it doesn't wedge the next poll";
+  // issue #81: this branch must also arm the idle-path hop holdoff, so maybe_hop() does not
+  // retune under a frame that is still arriving.
+  EXPECT_TRUE(radio.reception_in_progress())
+      << "the sync-without-RX_DONE branch must record the reception so the idle-path hop holds off";
+}
+
+TEST(RadioLR1121, ResetRxStateClearsHopHoldoff) {
+  // read_rx_packet() itself is overridden away from the real SPI path by this fixture (unless
+  // set_use_real_read_rx_packet() is set), so this drives reset_rx_state_() — the single funnel
+  // every "RX torn down and re-armed" path goes through — via check_for_packet()'s catch-all
+  // branch instead: an IRQ reading that is activity (CRC_ERR) but neither SYNC_WORD_VALID nor
+  // RX_DONE reaches the same real, non-overridden reset_rx_state_() call that read_rx_packet()
+  // reaches on every one of its own return paths.
+  ScriptedSpi spi;
+  MockPin rst, irq, busy(false);
+  TestableRadioLR1121 radio(&spi, &rst, &irq, &busy, 0, 0x07);
+  radio.note_reception_from_test();
+  ASSERT_TRUE(radio.reception_in_progress()) << "sanity: the holdoff must start armed";
+
+  radio.mark_dio_fired_from_isr();
+  radio.set_irq_sequence({LR1121_IRQ_CRC_ERR});
+
+  RadioRxPacket packet{};
+  EXPECT_FALSE(radio.check_for_packet(packet));
+  EXPECT_FALSE(radio.reception_in_progress())
+      << "reset_rx_state_() must drop the holdoff, not leave a stale deadline blocking the next "
+         "~12 ms of hopping";
+}
+
+TEST(RadioLR1121, RealTwoPassReceiveArmsThenClearsHopHoldoff) {
+  // Every other holdoff test either arms the latch artificially (note_reception_from_test()) or
+  // clears it through the CRC_ERR catch-all — neither exercises the actual two-pass sequence the
+  // whole fix depends on: pass 1 arms the holdoff from the sync-only branch, pass 2 delivers via
+  // RX_DONE and clears it through the real (non-overridden) read_rx_packet(). LR1121 is the one
+  // fixture with a real-path seam (set_use_real_read_rx_packet()); SX1262's fixture overrides
+  // read_rx_packet() unconditionally and can't drive this, so this case is LR1121-only.
+  ScriptedSpi spi;
+  MockPin rst, irq, busy(false);
+  TestableRadioLR1121 radio(&spi, &rst, &irq, &busy, 0, 0x07);
+  radio.set_use_real_read_rx_packet(true);
+  radio.set_irq_sequence({LR1121_IRQ_SYNC_WORD_VALID, LR1121_IRQ_RX_DONE});
+
+  // Pass 1: sync-only. Arms the holdoff; not a complete packet yet.
+  radio.mark_dio_fired_from_isr();
+  RadioRxPacket packet{};
+  EXPECT_FALSE(radio.check_for_packet(packet));
+  EXPECT_TRUE(radio.reception_in_progress()) << "the sync-only pass must arm the holdoff";
+
+  // Pass 2: RX_DONE. Delivers (or at least tears down) the reception via the real read_rx_packet(),
+  // whose every return path funnels through reset_rx_state_() and clears the holdoff.
+  radio.mark_dio_fired_from_isr();
+  (void) radio.check_for_packet(packet);
+  EXPECT_FALSE(radio.reception_in_progress())
+      << "the real RX_DONE pass must clear the holdoff armed by the sync-only pass";
 }
 
 TEST(RadioLR1121, CheckForPacketPreambleOnlyDoesNotResetRx) {

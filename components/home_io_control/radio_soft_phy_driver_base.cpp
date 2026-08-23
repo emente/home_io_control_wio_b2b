@@ -220,13 +220,26 @@ void SoftPhyDriverBase::rearm_rx_after_tx_() {
   //     standby the instant TxDone fires;
   //   - the buffer base is written at init and nothing since has moved it.
   // What genuinely must happen: clear the latched TxDone (it shares the IRQ word with RX events),
-  // restore the RX packet params that this transmission overwrote, and re-enter RX.
+  // restore the RX packet params that this transmission overwrote, and re-enter RX. Also drop the
+  // hop holdoff (issue #81): whatever it was tracking belonged to the reception that this TX just
+  // destroyed by transmitting over it, and RX is genuinely re-arming here same as it does through
+  // reset_rx_state_() — unlike that call's SetStandby/buffer-base work, clearing the flag costs
+  // nothing, so there is no reason to leave it stale on this path.
+  this->clear_reception_in_progress_();
   this->clear_irq_status(0xFFFFFFFF);
   this->set_rx_packet_params();
   this->set_mode_rx();
 }
 
 void SoftPhyDriverBase::reset_rx_state_(bool force_standby) {
+  // Whatever was arriving is over — delivered, timed out, or deliberately discarded. Drop the hop
+  // holdoff with it, rather than leaving the next ~12 ms of hopping waiting on a deadline that no
+  // longer refers to anything (issue #81). This funnel covers every "RX torn down and re-armed"
+  // path except rearm_rx_after_tx_(), which clears the same flag itself for the same reason (see
+  // its own comment for why it can't just call this function): poll_until_activity_()'s timeout,
+  // try_early_completion_()'s success, read_rx_packet()'s end, finalize_receive_()'s failure, and
+  // check_for_packet()'s catch-all.
+  this->clear_reception_in_progress_();
   if (force_standby)
     this->set_mode_standby();
   this->clear_irq_status(0xFFFFFFFF);
@@ -344,6 +357,14 @@ bool SoftPhyDriverBase::check_for_packet(RadioRxPacket &packet) {
   }
 
   if ((irq & this->sync_word_valid_bit()) != 0 && (irq & this->rx_done_bit()) == 0) {
+    // A frame is genuinely arriving. Record it so maybe_hop() (which runs a few lines up the
+    // caller's stack in loop()) holds the idle-path hop off instead of retuning under it —
+    // change_frequency() clears the whole IRQ word and the DIO latch, so a frame that loses that
+    // race is destroyed outright, not merely delayed (issue #81). A fresh is_sync_detected() read
+    // from maybe_hop() would not work here: the clear_irq_status() call right below has already
+    // dropped the sync bit by the time maybe_hop() could look at it, so the observation has to be
+    // captured now, before it disappears. The holdoff expires on its own; see RX_HOP_HOLDOFF_US.
+    this->note_reception_in_progress_();
     this->clear_irq_status(this->sync_word_valid_bit());
     return false;
   }

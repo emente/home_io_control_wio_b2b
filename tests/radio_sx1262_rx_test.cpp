@@ -41,6 +41,11 @@ class TestableRadioSX1262 : public RadioSX1262 {
   // Control whether the final packet read succeeds.
   void set_read_success(bool success) { read_success_ = success; }
 
+  // Arm the hop holdoff directly — exposed here since note_reception_in_progress_() is protected
+  // on RadioDriver, and this fixture's overridden read_rx_packet() below never reaches the
+  // sync-without-RX_DONE branch that would normally arm it.
+  void note_reception_from_test() { this->note_reception_in_progress_(); }
+
  protected:
   uint32_t read_irq_status_raw() override {
     if (irq_idx_ < irq_seq_.size()) {
@@ -774,6 +779,51 @@ TEST(RadioSX1262, EarlyCompletionIsOptInPerChip) {
   MockPin rst, dio1, busy(false);
   EarlyRxRadioSX1262 radio(&spi, &rst, &dio1, &busy, 0, 0);
   EXPECT_EQ(radio.early_rx_read_offset(), SX1262_RX_BUFFER_BASE);
+}
+
+// ============================================================================
+// Idle-path hop holdoff (issue #81): check_for_packet()'s sync-without-RX_DONE branch must arm
+// reception_in_progress() so ExchangeEngine::maybe_hop() does not retune under a frame that is
+// still arriving, and a completed reception (successful or not) must drop the holdoff again via
+// reset_rx_state_().
+// ============================================================================
+
+TEST(RadioSX1262, CheckForPacketSyncWithoutRxDoneArmsHopHoldoff) {
+  MockSpi spi;
+  MockPin rst, dio1, busy(false);
+  TestableRadioSX1262 radio(&spi, &rst, &dio1, &busy, 0, 0);
+  radio.mark_dio_fired_from_isr();
+  radio.set_irq_sequence({SX1262_IRQ_SYNC_WORD_VALID});
+
+  RadioRxPacket packet{};
+  bool ok = radio.check_for_packet(packet);
+
+  EXPECT_FALSE(ok) << "SYNC_WORD_VALID without RX_DONE is not a complete packet yet";
+  EXPECT_TRUE(radio.reception_in_progress())
+      << "the sync-without-RX_DONE branch must record the reception so the idle-path hop holds off";
+}
+
+TEST(RadioSX1262, ResetRxStateClearsHopHoldoff) {
+  // read_rx_packet() itself is overridden away from the real SPI path by this fixture (as in
+  // every other test in this file), so this drives reset_rx_state_() — the single funnel every
+  // "RX torn down and re-armed" path goes through, including read_rx_packet()'s own end — via
+  // check_for_packet()'s catch-all branch instead: an IRQ reading that is activity (CRC_ERR) but
+  // neither SYNC_WORD_VALID nor RX_DONE reaches the same real, non-overridden reset_rx_state_()
+  // call that read_rx_packet() reaches on every one of its own return paths.
+  MockSpi spi;
+  MockPin rst, dio1, busy(false);
+  TestableRadioSX1262 radio(&spi, &rst, &dio1, &busy, 0, 0);
+  radio.note_reception_from_test();
+  ASSERT_TRUE(radio.reception_in_progress()) << "sanity: the holdoff must start armed";
+
+  radio.mark_dio_fired_from_isr();
+  radio.set_irq_sequence({SX1262_IRQ_CRC_ERR});
+
+  RadioRxPacket result{};
+  EXPECT_FALSE(radio.check_for_packet(result));
+  EXPECT_FALSE(radio.reception_in_progress())
+      << "reset_rx_state_() must drop the holdoff, not leave a stale deadline blocking the next "
+         "~12 ms of hopping";
 }
 
 TEST(RadioSX1262, EarlyCompletionDeclinesWindowsTooShortToFinishIn) {
