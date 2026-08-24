@@ -217,6 +217,16 @@ static constexpr uint8_t LR1121_RFSWITCH_TX_HF = 0x00;             ///< 2.4GHz p
 static constexpr uint8_t LR1121_RFSWITCH_GNSS = 0x00;              ///< Unused; both low.
 static constexpr uint8_t LR1121_RFSWITCH_WIFI = 0x00;              ///< Unused; both low.
 
+/// How long SoftPhyDriverBase::wait_busy_() waits for BUSY to drop before declaring the chip
+/// failed. The LR11xx runs an internal boot ROM after reset before BUSY is meaningful —
+/// cross-checked against RadioLib's LRxxxx::reset(), which waits ~300ms ("typical transition
+/// duration should be 273 ms") and then polls BUSY with a 3s timeout; matched here exactly rather
+/// than picking an arbitrary shorter value, since the only cost of a longer timeout is on the
+/// already-failing path (a genuinely dead chip takes a few seconds longer to report failure).
+/// Much longer than SX1262's (see SX1262_BUSY_TIMEOUT_MS in radio_sx1262.h) — different chips,
+/// different boot behavior, not a value that should be unified.
+static constexpr uint32_t LR1121_BUSY_TIMEOUT_MS = 3000;
+
 /// LR1121 TCXO voltage on the T3-S3 board — 3.0V, confirmed on real hardware.
 static constexpr uint8_t LR1121_TCXO_STARTUP_DELAY_TICKS_MSB = 0x00;
 static constexpr uint8_t LR1121_TCXO_STARTUP_DELAY_TICKS_MID = 0x01;
@@ -241,10 +251,10 @@ class RadioLR1121 : public SoftPhyDriverBase {
  public:
   RadioLR1121(SpiAccess *spi, InternalGPIOPin *rst_pin, InternalGPIOPin *irq_pin, InternalGPIOPin *busy_pin,
               uint8_t tx_power, uint8_t tcxo_voltage_yaml_code)
-      : SoftPhyDriverBase(rst_pin, LR1121_RESPONSE_PREAMBLE, LR1121_POST_TX_SETTLE_US),
+      : SoftPhyDriverBase(rst_pin, busy_pin, LR1121_BUSY_TIMEOUT_MS, LR1121_RESPONSE_PREAMBLE,
+                          LR1121_POST_TX_SETTLE_US),
         spi_(spi),
         irq_pin_(irq_pin),
-        busy_pin_(busy_pin),
         tx_power_(tx_power),
         tcxo_voltage_yaml_code_(tcxo_voltage_yaml_code) {}
 
@@ -258,13 +268,11 @@ class RadioLR1121 : public SoftPhyDriverBase {
   }
   /// @brief Per-channel dwell for a rotating listen (LR1121).
   ///
-  /// LR1121 frequency changes require a standby→SetRfFrequency→RX cycle (no fast hop), same as
-  /// the SX1262, so a rotating listen needs the equivalent longer dwell. Governs discovery and
-  /// the broadcast roll-call alike (see @ref RadioDriver::hop_dwell_ms) — this driver no longer
-  /// carries a separate, longer dwell just for the exchange waits (removed: it existed only to
-  /// stop those two loops from hopping at all, which @ref ListenPolicy::HOLD_REQUEST_CHANNEL now
-  /// does directly). The value comes from the user-facing `lr1121_discovery_hop_slice_ms` tuning
-  /// field.
+  /// See @ref LR1121_DISCOVERY_HOP_SLICE_MS for why this is measured independently rather than
+  /// inherited from SX1262, and @ref SX1262_DISCOVERY_HOP_SLICE_MS for the shared short-dwell
+  /// reasoning. Governs discovery and the broadcast roll-call alike (see
+  /// @ref RadioDriver::hop_dwell_ms). The value comes from the user-facing
+  /// `lr1121_discovery_hop_slice_ms` tuning field.
   [[nodiscard]] uint16_t hop_dwell_ms(const TuningConfig &tuning) const override {
     return tuning.lr1121_discovery_hop_slice_ms;
   }
@@ -277,7 +285,6 @@ class RadioLR1121 : public SoftPhyDriverBase {
   void set_mode_rx() override;
   /// @copydoc RadioDriver::set_mode_standby
   void set_mode_standby() override;
-  [[nodiscard]] bool is_failed() const override { return this->failed_; }
   [[nodiscard]] const char *chip_name() const override { return "lr1121"; }
   /// @brief Dump LR1121-specific debug info.
   void dump_debug() override;
@@ -290,8 +297,6 @@ class RadioLR1121 : public SoftPhyDriverBase {
   void set_rx_bandwidth_(LR1121RxBandwidth bandwidth);
 
   // --- SPI communication (16-bit opcode, two-transaction) ---
-  /// Wait until BUSY pin is low before any SPI transaction.
-  void wait_busy_();
   /// Write-only command: opcode + params, single NSS cycle.
   /// @param opcode LR1121 16-bit opcode.
   /// @param params Pointer to parameter buffer (may be nullptr).
@@ -430,11 +435,9 @@ class RadioLR1121 : public SoftPhyDriverBase {
  private:
   SpiAccess *spi_;
   InternalGPIOPin *irq_pin_;
-  InternalGPIOPin *busy_pin_;
   uint8_t tx_power_;
   uint8_t tcxo_voltage_yaml_code_;  ///< Raw TCXO_VOLTAGE_OPTIONS code from YAML (1_6V=0x01 .. 3_3V=0x08).
-  bool failed_{false};
-  uint8_t last_stat1_{0};                                            ///< Most recent Stat1 byte (diagnostics).
+  uint8_t last_stat1_{0};           ///< Most recent Stat1 byte (diagnostics).
   LR1121RxBandwidth rx_bandwidth_{LR1121RxBandwidth::BW_117_3_KHZ};  ///< Runtime-tunable RX bandwidth.
 };
 

@@ -43,6 +43,26 @@ bool wait_for_air_time(uint32_t sync_us, uint8_t raw_bytes, uint32_t start_ms, u
 
 }  // namespace
 
+// === SPI transport helper shared by both chips ===
+
+void SoftPhyDriverBase::wait_busy_() {
+  // Once a BUSY timeout has failed the driver, every later call would otherwise re-run the same
+  // timeout again — init()'s remaining configure_radio_() steps would each block for
+  // busy_timeout_ms_ before init() finally returns false. Short-circuit instead: the chip is
+  // already known-unresponsive, so there's nothing to wait for.
+  if (this->failed_)
+    return;
+  uint32_t const start = millis();
+  while (this->busy_pin_->digital_read()) {
+    if (millis() - start > this->busy_timeout_ms_) {
+      ESP_LOGE(TAG, "BUSY timeout");
+      this->failed_ = true;
+      return;
+    }
+    App.feed_wdt();
+  }
+}
+
 // === Packet RX (blocking) ===
 
 bool SoftPhyDriverBase::wait_for_packet(RadioRxPacket &packet, uint32_t timeout_ms) {
@@ -82,9 +102,16 @@ bool SoftPhyDriverBase::poll_until_activity_(uint32_t start, uint32_t timeout_ms
     if (this->is_dio_fired())
       this->clear_dio_fired();
     irq = this->read_irq_status_raw();
-    if ((irq & this->activity_irq_mask()) != 0)
+    if ((irq & this->activity_irq_mask()) != 0) {
+      // The flag must never outlive the poll that set it, so every exit path resets it here too.
+      this->preamble_latched_at_timeout_ = false;
       return true;
+    }
     if (millis() - start > timeout_ms) {
+      // Snapshot before the reset below wipes it: reset_rx_state_() clears the whole IRQ word, so
+      // this is the last point PreambleDetected can be observed for this dwell (see
+      // preamble_latched_at_timeout_'s doc comment for why the bit can't just be re-read afterward).
+      this->preamble_latched_at_timeout_ = (irq & this->preamble_detected_bit()) != 0;
       this->clear_dio_fired();
       this->reset_rx_state_();
       return false;
@@ -527,6 +554,10 @@ int16_t SoftPhyDriverBase::read_rssi() { return -(int16_t) this->read_rssi_raw_b
 bool SoftPhyDriverBase::is_sync_detected() { return (this->read_irq_status_raw() & this->sync_word_valid_bit()) != 0; }
 
 bool SoftPhyDriverBase::is_preamble_detected() {
+  if (this->preamble_latched_at_timeout_) {
+    this->preamble_latched_at_timeout_ = false;
+    return true;
+  }
   return (this->read_irq_status_raw() & this->preamble_detected_bit()) != 0;
 }
 
