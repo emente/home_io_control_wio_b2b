@@ -100,7 +100,8 @@ void IOHomeControlComponent::setup() {
   // reboot afterward, unlike every other bootloader excursion this feature performs.
   this->run_lr1121_boot_time_bootloader_read_();
 #endif
-
+ESP_LOGE(detail::TAG, "========== ABOUT TO CALL radio_->init() ==========");
+ESP_LOGE(detail::TAG, "radio_ pointer = %p", this->radio_);
   if (!this->radio_->init()) {
     delete this->radio_;
     this->radio_ = nullptr;
