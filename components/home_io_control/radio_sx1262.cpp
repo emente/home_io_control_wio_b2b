@@ -225,67 +225,67 @@ void IRAM_ATTR RadioSX1262::gpio_intr(RadioSX1262 *arg) { arg->mark_dio_fired_fr
 
 
 bool RadioSX1262::init() {
-  ESP_LOGE(TAG, "================================================");
-  ESP_LOGE(TAG, "       SX1262 / WIO-SX1262 DEBUG INIT");
-  ESP_LOGE(TAG, "================================================");
+  ESP_LOGCONFIG(TAG, "================================================");
+  ESP_LOGCONFIG(TAG, "       SX1262 / WIO-SX1262 DEBUG INIT");
+  ESP_LOGCONFIG(TAG, "================================================");
 
-  ESP_LOGE(TAG, "Hardware configuration:");
-  ESP_LOGE(TAG, "  SPI SCK       : GPIO36");
-  ESP_LOGE(TAG, "  SPI MISO      : GPIO37");
-  ESP_LOGE(TAG, "  SPI MOSI      : GPIO35");
-  ESP_LOGE(TAG, "  SPI CS/NSS    : GPIO7");
-  ESP_LOGE(TAG, "  RESET         : GPIO4");
-  ESP_LOGE(TAG, "  DIO1          : GPIO1");
-  ESP_LOGE(TAG, "  BUSY          : GPIO2");
-  ESP_LOGE(TAG, "  PWR_EN        : GPIO5");
-  ESP_LOGE(TAG, "  TCXO          : 1.8V");
-  ESP_LOGE(TAG, "  SPI           : 8 MHz / MODE0");
+  ESP_LOGCONFIG(TAG, "Hardware configuration:");
+  ESP_LOGCONFIG(TAG, "  SPI SCK       : GPIO36");
+  ESP_LOGCONFIG(TAG, "  SPI MISO      : GPIO37");
+  ESP_LOGCONFIG(TAG, "  SPI MOSI      : GPIO35");
+  ESP_LOGCONFIG(TAG, "  SPI CS/NSS    : GPIO7");
+  ESP_LOGCONFIG(TAG, "  RESET         : GPIO4");
+  ESP_LOGCONFIG(TAG, "  DIO1          : GPIO1");
+  ESP_LOGCONFIG(TAG, "  BUSY          : GPIO2");
+  ESP_LOGCONFIG(TAG, "  PWR_EN        : GPIO5");
+  ESP_LOGCONFIG(TAG, "  TCXO          : 1.8V");
+  ESP_LOGCONFIG(TAG, "  SPI           : 8 MHz / MODE0");
 
   // ============================================================
   // 1. PWR_EN
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[1] Wio-SX1262 power enable");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[1] Wio-SX1262 power enable");
 
   if (this->fem_en_pin_ == nullptr) {
-    ESP_LOGE(TAG, "  *** ERROR: fem_en_pin_ == NULL ***");
-    ESP_LOGE(TAG, "  GPIO5/PWR_EN is NOT configured!");
+    ESP_LOGCONFIG(TAG, "  *** ERROR: fem_en_pin_ == NULL ***");
+    ESP_LOGCONFIG(TAG, "  GPIO5/PWR_EN is NOT configured!");
     this->failed_ = true;
     return false;
   }
 
   this->fem_en_pin_->setup();
 
-  ESP_LOGE(TAG, "  GPIO5 configured as output");
+  ESP_LOGCONFIG(TAG, "  GPIO5 configured as output");
 
   this->fem_en_pin_->digital_write(false);
-  ESP_LOGE(TAG, "  GPIO5 -> LOW");
+  ESP_LOGCONFIG(TAG, "  GPIO5 -> LOW");
   delay(20);
 
   this->fem_en_pin_->digital_write(true);
-  ESP_LOGE(TAG, "  GPIO5 -> HIGH");
+  ESP_LOGCONFIG(TAG, "  GPIO5 -> HIGH");
 
   delay(100);
 
-  ESP_LOGE(TAG, "  PWR_EN startup delay complete");
+  ESP_LOGCONFIG(TAG, "  PWR_EN startup delay complete");
 
   // ============================================================
   // 2. Radio GPIO setup
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[2] SX1262 GPIO setup");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[2] SX1262 GPIO setup");
 
   this->rst_pin_->setup();
   this->dio1_pin_->setup();
   this->busy_pin_->setup();
 
-  ESP_LOGE(TAG, "  RESET configured");
-  ESP_LOGE(TAG, "  DIO1 configured");
-  ESP_LOGE(TAG, "  BUSY configured");
+  ESP_LOGCONFIG(TAG, "  RESET configured");
+  ESP_LOGCONFIG(TAG, "  DIO1 configured");
+  ESP_LOGCONFIG(TAG, "  BUSY configured");
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  Initial GPIO state: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
@@ -296,19 +296,19 @@ bool RadioSX1262::init() {
   // 3. Reset
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[3] SX1262 hardware reset");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[3] SX1262 hardware reset");
 
   this->rst_pin_->digital_write(true);
-  ESP_LOGE(TAG, "  RESET -> HIGH");
+  ESP_LOGCONFIG(TAG, "  RESET -> HIGH");
   delay(10);
 
   this->rst_pin_->digital_write(false);
-  ESP_LOGE(TAG, "  RESET -> LOW");
+  ESP_LOGCONFIG(TAG, "  RESET -> LOW");
 
   delay(100);
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  During reset: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
@@ -316,11 +316,11 @@ bool RadioSX1262::init() {
       this->dio1_pin_->digital_read());
 
   this->rst_pin_->digital_write(true);
-  ESP_LOGE(TAG, "  RESET -> HIGH");
+  ESP_LOGCONFIG(TAG, "  RESET -> HIGH");
 
   delay(500);
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  After reset: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
@@ -331,15 +331,15 @@ bool RadioSX1262::init() {
   // 4. BUSY
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[4] Waiting for SX1262 BUSY");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[4] Waiting for SX1262 BUSY");
 
   uint32_t busy_start = millis();
 
   while (this->busy_pin_->digital_read()) {
     if (millis() - busy_start > 2000) {
-      ESP_LOGE(TAG, "  *** ERROR: BUSY stayed HIGH > 2 seconds ***");
-      ESP_LOGE(TAG, "  This strongly suggests a power/reset/chip problem.");
+      ESP_LOGCONFIG(TAG, "  *** ERROR: BUSY stayed HIGH > 2 seconds ***");
+      ESP_LOGCONFIG(TAG, "  This strongly suggests a power/reset/chip problem.");
       this->failed_ = true;
       return false;
     }
@@ -347,7 +347,7 @@ bool RadioSX1262::init() {
     delay(1);
   }
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  BUSY LOW after %lu ms",
       millis() - busy_start);
@@ -356,9 +356,9 @@ bool RadioSX1262::init() {
   // 5. First raw SX1262 GET_STATUS
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[5] FIRST RAW SX1262 SPI TEST");
-  ESP_LOGE(TAG, "  Sending GET_STATUS (0x%02X)", SX1262_GET_STATUS);
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[5] FIRST RAW SX1262 SPI TEST");
+  ESP_LOGCONFIG(TAG, "  Sending GET_STATUS (0x%02X)", SX1262_GET_STATUS);
 
   this->wait_busy_();
 
@@ -372,26 +372,26 @@ bool RadioSX1262::init() {
 
   this->spi_->spi_disable();
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  SPI returned: command=0x%02X response=0x%02X",
       status_cmd,
       status_response);
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  BUSY after GET_STATUS=%d",
       this->busy_pin_->digital_read());
 
   if (status_response == 0xFF) {
-    ESP_LOGE(TAG, "  *** GET_STATUS = 0xFF ***");
-    ESP_LOGE(TAG, "  SX1262 is NOT responding normally.");
-    ESP_LOGE(TAG, "  Suspects: CS, SPI wiring, power, or chip state.");
+    ESP_LOGCONFIG(TAG, "  *** GET_STATUS = 0xFF ***");
+    ESP_LOGCONFIG(TAG, "  SX1262 is NOT responding normally.");
+    ESP_LOGCONFIG(TAG, "  Suspects: CS, SPI wiring, power, or chip state.");
   } else if (status_response == 0x00) {
-    ESP_LOGE(TAG, "  *** GET_STATUS = 0x00 ***");
-    ESP_LOGE(TAG, "  No valid SX1262 status detected.");
+    ESP_LOGCONFIG(TAG, "  *** GET_STATUS = 0x00 ***");
+    ESP_LOGCONFIG(TAG, "  No valid SX1262 status detected.");
   } else {
-    ESP_LOGE(
+    ESP_LOGCONFIG(
         TAG,
         "  *** GET_STATUS returned 0x%02X ***",
         status_response);
@@ -401,7 +401,7 @@ bool RadioSX1262::init() {
   uint8_t chip_mode = (status_response >> 4) & 0x07;
   uint8_t command_status = (status_response >> 1) & 0x07;
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  Decoded status: mode=%u command_status=%u",
       chip_mode,
@@ -411,8 +411,8 @@ bool RadioSX1262::init() {
   // 6. Repeat GET_STATUS
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[6] Repeating GET_STATUS three times");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[6] Repeating GET_STATUS three times");
 
   for (int i = 0; i < 3; i++) {
     this->wait_busy_();
@@ -427,7 +427,7 @@ bool RadioSX1262::init() {
 
     this->spi_->spi_disable();
 
-    ESP_LOGE(
+    ESP_LOGCONFIG(
         TAG,
         "  TEST %d: TX=0x%02X RX=0x%02X BUSY=%d",
         i + 1,
@@ -442,27 +442,27 @@ bool RadioSX1262::init() {
   // 7. Existing driver configuration
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[7] Running normal SX1262 configuration");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[7] Running normal SX1262 configuration");
 
   this->configure_radio_();
 
   if (this->failed_) {
-    ESP_LOGE(TAG, "  *** configure_radio_() set failed_ ***");
-    ESP_LOGE(TAG, "================================================");
-    ESP_LOGE(TAG, "             SX1262 INIT FAILED");
-    ESP_LOGE(TAG, "================================================");
+    ESP_LOGCONFIG(TAG, "  *** configure_radio_() set failed_ ***");
+    ESP_LOGCONFIG(TAG, "================================================");
+    ESP_LOGCONFIG(TAG, "             SX1262 INIT FAILED");
+    ESP_LOGCONFIG(TAG, "================================================");
     return false;
   }
 
-  ESP_LOGE(TAG, "  configure_radio_() completed");
+  ESP_LOGCONFIG(TAG, "  configure_radio_() completed");
 
   // ============================================================
   // 8. Post-configuration GET_STATUS
   // ============================================================
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "[8] POST-CONFIGURATION SPI TEST");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "[8] POST-CONFIGURATION SPI TEST");
 
   this->wait_busy_();
 
@@ -476,23 +476,23 @@ bool RadioSX1262::init() {
 
   this->spi_->spi_disable();
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  GET_STATUS: TX=0x%02X RX=0x%02X",
       post_cmd,
       post_status);
 
-  ESP_LOGE(
+  ESP_LOGCONFIG(
       TAG,
       "  Final GPIO: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
       this->busy_pin_->digital_read(),
       this->dio1_pin_->digital_read());
 
-  ESP_LOGE(TAG, "");
-  ESP_LOGE(TAG, "================================================");
-  ESP_LOGE(TAG, "          SX1262 DEBUG INIT COMPLETE");
-  ESP_LOGE(TAG, "================================================");
+  ESP_LOGCONFIG(TAG, "");
+  ESP_LOGCONFIG(TAG, "================================================");
+  ESP_LOGCONFIG(TAG, "          SX1262 DEBUG INIT COMPLETE");
+  ESP_LOGCONFIG(TAG, "================================================");
 
   return true;
 }
@@ -501,6 +501,7 @@ bool RadioSX1262::init() {
 
 
 void RadioSX1262::dump_debug() {
+  ESP_LOGCONFIG(TAG, "========== DUMP DEBUG ==========");
   this->wait_busy_();
   this->spi_->spi_enable();
   uint8_t const chip_status = this->spi_->spi_transfer(SX1262_GET_STATUS);
