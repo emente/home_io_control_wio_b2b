@@ -403,8 +403,8 @@ void IOHomeControlComponent::dump_config() {
     LOG_PIN("  DIO4 Pin: ", this->dio4_pin_);
   if (this->busy_pin_ != nullptr)
     LOG_PIN("  BUSY Pin: ", this->busy_pin_);
-  if (this->fem_en_pin != nullptr)
-    LOG_PIN("  fem_en_pin Pin: ", this->fem_en_pin);
+  if (this->fem_en_pin_ != nullptr)
+    LOG_PIN("  fem_en_pin_ Pin: ", this->fem_en_pin_);
 
   ESP_LOGCONFIG(detail::TAG, "  Devices: %zu", this->registry_.size());
   if (this->registry_.linked_remote_count() > 0) {
