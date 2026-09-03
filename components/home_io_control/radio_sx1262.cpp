@@ -223,27 +223,49 @@ void IRAM_ATTR RadioSX1262::gpio_intr(RadioSX1262 *arg) { arg->mark_dio_fired_fr
 // === Initialization ===
 
 bool RadioSX1262::init() {
+  // --- Wio-SX1262 / XIAO ESP32-S3 power-up ---
+  //
+  // On the Seeed Wio-SX1262 B2B board GPIO5 is PWR_EN.
+  // The existing fem_en_pin_ is used here as the board-level power-enable
+  // output because it is already exposed by the ESPHome component schema
+  // and is driven HIGH before radio reset.
+  if (this->fem_en_pin_ != nullptr) {
+    this->fem_en_pin_->setup();
+    this->fem_en_pin_->digital_write(true);
+    delay(100);
+  }
+
   // --- Pin setup ---
   this->rst_pin_->setup();
   this->dio1_pin_->setup();
   this->busy_pin_->setup();
 
-  // Front-end module pins (e.g., Heltec V4)
-  if (this->fem_en_pin_ != nullptr) {
-    this->fem_en_pin_->setup();
-    this->fem_en_pin_->digital_write(true);
-  }
   if (this->vfem_pin_ != nullptr) {
     this->vfem_pin_->setup();
     this->vfem_pin_->digital_write(true);
   }
+
   if (this->fem_pa_pin_ != nullptr) {
     this->fem_pa_pin_->setup();
     this->fem_pa_pin_->digital_write(true);
   }
 
-  // --- Hardware reset ---
-  this->reset_hardware_();
+  // --- SX1262 hardware reset ---
+  //
+  // The XIAO/Wio reference initialization gives the module substantially
+  // more time after reset than the generic 10 ms reset used by the common
+  // RadioDriver implementation.
+  this->rst_pin_->digital_write(true);
+  delay(10);
+
+  this->rst_pin_->digital_write(false);
+  delay(100);
+
+  this->rst_pin_->digital_write(true);
+
+  // Give the Wio module / TCXO / SX1262 boot sequence time to complete.
+  delay(500);
+
   this->wait_busy_();
   if (this->failed_)
     return false;
