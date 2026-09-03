@@ -222,105 +222,123 @@ void IRAM_ATTR RadioSX1262::gpio_intr(RadioSX1262 *arg) { arg->mark_dio_fired_fr
 
 // === Initialization ===
 
+
 bool RadioSX1262::init() {
-  ESP_LOGI(TAG, "========== SX1262 DEBUG INIT ==========");
+  ESP_LOGI(TAG, "================================================");
+  ESP_LOGI(TAG, "       SX1262 / WIO-SX1262 DEBUG INIT");
+  ESP_LOGI(TAG, "================================================");
 
-  ESP_LOGI(TAG, "Configuration:");
-  ESP_LOGI(TAG, "  CS/NSS   = GPIO7");
-  ESP_LOGI(TAG, "  RESET    = GPIO4");
-  ESP_LOGI(TAG, "  DIO1     = GPIO1");
-  ESP_LOGI(TAG, "  BUSY     = GPIO2");
-  ESP_LOGI(TAG, "  PWR_EN   = GPIO5");
-  ESP_LOGI(TAG, "  SCK      = GPIO36");
-  ESP_LOGI(TAG, "  MISO     = GPIO37");
-  ESP_LOGI(TAG, "  MOSI     = GPIO35");
-  ESP_LOGI(TAG, "  TCXO     = 1.8V");
-  ESP_LOGI(TAG, "  SPI      = mode 0, 8 MHz");
+  ESP_LOGI(TAG, "Hardware configuration:");
+  ESP_LOGI(TAG, "  SPI SCK       : GPIO36");
+  ESP_LOGI(TAG, "  SPI MISO      : GPIO37");
+  ESP_LOGI(TAG, "  SPI MOSI      : GPIO35");
+  ESP_LOGI(TAG, "  SPI CS/NSS    : GPIO7");
+  ESP_LOGI(TAG, "  RESET         : GPIO4");
+  ESP_LOGI(TAG, "  DIO1          : GPIO1");
+  ESP_LOGI(TAG, "  BUSY          : GPIO2");
+  ESP_LOGI(TAG, "  PWR_EN        : GPIO5");
+  ESP_LOGI(TAG, "  TCXO          : 1.8V");
+  ESP_LOGI(TAG, "  SPI           : 8 MHz / MODE0");
 
-  // ------------------------------------------------------------
-  // 1. Power enable
-  // ------------------------------------------------------------
-  ESP_LOGI(TAG, "[1] Enabling Wio-SX1262 PWR_EN");
+  // ============================================================
+  // 1. PWR_EN
+  // ============================================================
 
-  if (this->fem_en_pin_ != nullptr) {
-    this->fem_en_pin_->setup();
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[1] Wio-SX1262 power enable");
 
-    ESP_LOGI(TAG, "    PWR_EN configured as OUTPUT");
-    this->fem_en_pin_->digital_write(true);
-
-    ESP_LOGI(TAG, "    PWR_EN -> HIGH");
-    delay(100);
-
-    ESP_LOGI(TAG, "    PWR_EN startup delay complete");
-  } else {
-    ESP_LOGE(TAG, "    ERROR: fem_en_pin_ is NULL!");
-    ESP_LOGE(TAG, "    GPIO5/PWR_EN is NOT being controlled");
+  if (this->fem_en_pin_ == nullptr) {
+    ESP_LOGE(TAG, "  *** ERROR: fem_en_pin_ == NULL ***");
+    ESP_LOGE(TAG, "  GPIO5/PWR_EN is NOT configured!");
+    this->failed_ = true;
+    return false;
   }
 
-  // ------------------------------------------------------------
-  // 2. Configure radio GPIOs
-  // ------------------------------------------------------------
-  ESP_LOGI(TAG, "[2] Configuring SX1262 GPIOs");
+  this->fem_en_pin_->setup();
+
+  ESP_LOGI(TAG, "  GPIO5 configured as output");
+
+  this->fem_en_pin_->digital_write(false);
+  ESP_LOGI(TAG, "  GPIO5 -> LOW");
+  delay(20);
+
+  this->fem_en_pin_->digital_write(true);
+  ESP_LOGI(TAG, "  GPIO5 -> HIGH");
+
+  delay(100);
+
+  ESP_LOGI(TAG, "  PWR_EN startup delay complete");
+
+  // ============================================================
+  // 2. Radio GPIO setup
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[2] SX1262 GPIO setup");
 
   this->rst_pin_->setup();
   this->dio1_pin_->setup();
   this->busy_pin_->setup();
 
-  ESP_LOGI(TAG, "    RESET configured");
-  ESP_LOGI(TAG, "    DIO1 configured as input");
-  ESP_LOGI(TAG, "    BUSY configured as input");
+  ESP_LOGI(TAG, "  RESET configured");
+  ESP_LOGI(TAG, "  DIO1 configured");
+  ESP_LOGI(TAG, "  BUSY configured");
 
   ESP_LOGI(
       TAG,
-      "    Initial states: RESET=%d BUSY=%d DIO1=%d",
+      "  Initial GPIO state: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
       this->busy_pin_->digital_read(),
       this->dio1_pin_->digital_read());
 
-  // ------------------------------------------------------------
-  // 3. Reset line
-  // ------------------------------------------------------------
-  ESP_LOGI(TAG, "[3] Performing SX1262 hardware reset");
+  // ============================================================
+  // 3. Reset
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[3] SX1262 hardware reset");
 
   this->rst_pin_->digital_write(true);
-  ESP_LOGI(TAG, "    RESET -> HIGH");
+  ESP_LOGI(TAG, "  RESET -> HIGH");
   delay(10);
 
   this->rst_pin_->digital_write(false);
-  ESP_LOGI(TAG, "    RESET -> LOW");
+  ESP_LOGI(TAG, "  RESET -> LOW");
 
   delay(100);
 
   ESP_LOGI(
       TAG,
-      "    During reset: RESET=%d BUSY=%d DIO1=%d",
+      "  During reset: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
       this->busy_pin_->digital_read(),
       this->dio1_pin_->digital_read());
 
   this->rst_pin_->digital_write(true);
-  ESP_LOGI(TAG, "    RESET -> HIGH");
+  ESP_LOGI(TAG, "  RESET -> HIGH");
 
   delay(500);
 
   ESP_LOGI(
       TAG,
-      "    After reset: RESET=%d BUSY=%d DIO1=%d",
+      "  After reset: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
       this->busy_pin_->digital_read(),
       this->dio1_pin_->digital_read());
 
-  // ------------------------------------------------------------
-  // 4. Wait for SX1262 BUSY to release
-  // ------------------------------------------------------------
-  ESP_LOGI(TAG, "[4] Waiting for SX1262 BUSY to become LOW");
+  // ============================================================
+  // 4. BUSY
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[4] Waiting for SX1262 BUSY");
 
   uint32_t busy_start = millis();
 
   while (this->busy_pin_->digital_read()) {
     if (millis() - busy_start > 2000) {
-      ESP_LOGE(TAG, "    ERROR: BUSY remained HIGH for >2 seconds");
-      ESP_LOGE(TAG, "    SX1262 may not be powered or may be held in reset");
+      ESP_LOGE(TAG, "  *** ERROR: BUSY stayed HIGH > 2 seconds ***");
+      ESP_LOGE(TAG, "  This strongly suggests a power/reset/chip problem.");
       this->failed_ = true;
       return false;
     }
@@ -330,48 +348,154 @@ bool RadioSX1262::init() {
 
   ESP_LOGI(
       TAG,
-      "    BUSY released after %lu ms",
+      "  BUSY LOW after %lu ms",
       millis() - busy_start);
 
-  // ------------------------------------------------------------
-  // 5. First SPI/radio transaction
-  // ------------------------------------------------------------
-  ESP_LOGI(TAG, "[5] Attempting first SX1262 SPI transaction");
+  // ============================================================
+  // 5. First raw SX1262 GET_STATUS
+  // ============================================================
 
-  ESP_LOGI(TAG, "    BUSY=%d", this->busy_pin_->digital_read());
-  ESP_LOGI(TAG, "    DIO1=%d", this->dio1_pin_->digital_read());
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[5] FIRST RAW SX1262 SPI TEST");
+  ESP_LOGI(TAG, "  Sending GET_STATUS (0x%02X)", SX1262_GET_STATUS);
 
-  /*
-   * IMPORTANT:
-   *
-   * Insert the existing low-level SX1262 status/read operation here.
-   * Do NOT invent a second SPI bus.
-   *
-   * We want the result of the first command immediately after reset,
-   * before configure_radio_() changes anything.
-   */
+  this->wait_busy_();
 
-  ESP_LOGI(TAG, "[6] Calling existing SX1262 driver initialization");
+  this->spi_->spi_enable();
 
-  if (!this->configure_radio_()) {
-    ESP_LOGE(TAG, "    configure_radio_() FAILED");
-    ESP_LOGE(TAG, "========== SX1262 INIT FAILED ==========");
-    return false;
-  }
+  uint8_t status_cmd =
+      this->spi_->spi_transfer(SX1262_GET_STATUS);
 
-  ESP_LOGI(TAG, "    configure_radio_() succeeded");
+  uint8_t status_response =
+      this->spi_->spi_transfer(0x00);
+
+  this->spi_->spi_disable();
 
   ESP_LOGI(
       TAG,
-      "    Final GPIO state: RESET=%d BUSY=%d DIO1=%d",
+      "  SPI returned: command=0x%02X response=0x%02X",
+      status_cmd,
+      status_response);
+
+  ESP_LOGI(
+      TAG,
+      "  BUSY after GET_STATUS=%d",
+      this->busy_pin_->digital_read());
+
+  if (status_response == 0xFF) {
+    ESP_LOGE(TAG, "  *** GET_STATUS = 0xFF ***");
+    ESP_LOGE(TAG, "  SX1262 is NOT responding normally.");
+    ESP_LOGE(TAG, "  Suspects: CS, SPI wiring, power, or chip state.");
+  } else if (status_response == 0x00) {
+    ESP_LOGE(TAG, "  *** GET_STATUS = 0x00 ***");
+    ESP_LOGE(TAG, "  No valid SX1262 status detected.");
+  } else {
+    ESP_LOGI(
+        TAG,
+        "  *** GET_STATUS returned 0x%02X ***",
+        status_response);
+  }
+
+  // Decode status bits.
+  uint8_t chip_mode = (status_response >> 4) & 0x07;
+  uint8_t command_status = (status_response >> 1) & 0x07;
+
+  ESP_LOGI(
+      TAG,
+      "  Decoded status: mode=%u command_status=%u",
+      chip_mode,
+      command_status);
+
+  // ============================================================
+  // 6. Repeat GET_STATUS
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[6] Repeating GET_STATUS three times");
+
+  for (int i = 0; i < 3; i++) {
+    this->wait_busy_();
+
+    this->spi_->spi_enable();
+
+    uint8_t cmd =
+        this->spi_->spi_transfer(SX1262_GET_STATUS);
+
+    uint8_t response =
+        this->spi_->spi_transfer(0x00);
+
+    this->spi_->spi_disable();
+
+    ESP_LOGI(
+        TAG,
+        "  TEST %d: TX=0x%02X RX=0x%02X BUSY=%d",
+        i + 1,
+        cmd,
+        response,
+        this->busy_pin_->digital_read());
+
+    delay(10);
+  }
+
+  // ============================================================
+  // 7. Existing driver configuration
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[7] Running normal SX1262 configuration");
+
+  this->configure_radio_();
+
+  if (this->failed_) {
+    ESP_LOGE(TAG, "  *** configure_radio_() set failed_ ***");
+    ESP_LOGE(TAG, "================================================");
+    ESP_LOGE(TAG, "             SX1262 INIT FAILED");
+    ESP_LOGE(TAG, "================================================");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "  configure_radio_() completed");
+
+  // ============================================================
+  // 8. Post-configuration GET_STATUS
+  // ============================================================
+
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "[8] POST-CONFIGURATION SPI TEST");
+
+  this->wait_busy_();
+
+  this->spi_->spi_enable();
+
+  uint8_t post_cmd =
+      this->spi_->spi_transfer(SX1262_GET_STATUS);
+
+  uint8_t post_status =
+      this->spi_->spi_transfer(0x00);
+
+  this->spi_->spi_disable();
+
+  ESP_LOGI(
+      TAG,
+      "  GET_STATUS: TX=0x%02X RX=0x%02X",
+      post_cmd,
+      post_status);
+
+  ESP_LOGI(
+      TAG,
+      "  Final GPIO: RESET=%d BUSY=%d DIO1=%d",
       this->rst_pin_->digital_read(),
       this->busy_pin_->digital_read(),
       this->dio1_pin_->digital_read());
 
-  ESP_LOGI(TAG, "========== SX1262 INIT SUCCESS ==========");
+  ESP_LOGI(TAG, "");
+  ESP_LOGI(TAG, "================================================");
+  ESP_LOGI(TAG, "          SX1262 DEBUG INIT COMPLETE");
+  ESP_LOGI(TAG, "================================================");
 
   return true;
 }
+
 
 
 
