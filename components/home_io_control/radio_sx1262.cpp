@@ -223,60 +223,157 @@ void IRAM_ATTR RadioSX1262::gpio_intr(RadioSX1262 *arg) { arg->mark_dio_fired_fr
 // === Initialization ===
 
 bool RadioSX1262::init() {
-  // --- Wio-SX1262 / XIAO ESP32-S3 power-up ---
-  //
-  // On the Seeed Wio-SX1262 B2B board GPIO5 is PWR_EN.
-  // The existing fem_en_pin_ is used here as the board-level power-enable
-  // output because it is already exposed by the ESPHome component schema
-  // and is driven HIGH before radio reset.
+  ESP_LOGI(TAG, "========== SX1262 DEBUG INIT ==========");
+
+  ESP_LOGI(TAG, "Configuration:");
+  ESP_LOGI(TAG, "  CS/NSS   = GPIO7");
+  ESP_LOGI(TAG, "  RESET    = GPIO4");
+  ESP_LOGI(TAG, "  DIO1     = GPIO1");
+  ESP_LOGI(TAG, "  BUSY     = GPIO2");
+  ESP_LOGI(TAG, "  PWR_EN   = GPIO5");
+  ESP_LOGI(TAG, "  SCK      = GPIO36");
+  ESP_LOGI(TAG, "  MISO     = GPIO37");
+  ESP_LOGI(TAG, "  MOSI     = GPIO35");
+  ESP_LOGI(TAG, "  TCXO     = 1.8V");
+  ESP_LOGI(TAG, "  SPI      = mode 0, 8 MHz");
+
+  // ------------------------------------------------------------
+  // 1. Power enable
+  // ------------------------------------------------------------
+  ESP_LOGI(TAG, "[1] Enabling Wio-SX1262 PWR_EN");
+
   if (this->fem_en_pin_ != nullptr) {
     this->fem_en_pin_->setup();
+
+    ESP_LOGI(TAG, "    PWR_EN configured as OUTPUT");
     this->fem_en_pin_->digital_write(true);
+
+    ESP_LOGI(TAG, "    PWR_EN -> HIGH");
     delay(100);
+
+    ESP_LOGI(TAG, "    PWR_EN startup delay complete");
+  } else {
+    ESP_LOGE(TAG, "    ERROR: fem_en_pin_ is NULL!");
+    ESP_LOGE(TAG, "    GPIO5/PWR_EN is NOT being controlled");
   }
 
-  // --- Pin setup ---
+  // ------------------------------------------------------------
+  // 2. Configure radio GPIOs
+  // ------------------------------------------------------------
+  ESP_LOGI(TAG, "[2] Configuring SX1262 GPIOs");
+
   this->rst_pin_->setup();
   this->dio1_pin_->setup();
   this->busy_pin_->setup();
 
-  if (this->vfem_pin_ != nullptr) {
-    this->vfem_pin_->setup();
-    this->vfem_pin_->digital_write(true);
-  }
+  ESP_LOGI(TAG, "    RESET configured");
+  ESP_LOGI(TAG, "    DIO1 configured as input");
+  ESP_LOGI(TAG, "    BUSY configured as input");
 
-  if (this->fem_pa_pin_ != nullptr) {
-    this->fem_pa_pin_->setup();
-    this->fem_pa_pin_->digital_write(true);
-  }
+  ESP_LOGI(
+      TAG,
+      "    Initial states: RESET=%d BUSY=%d DIO1=%d",
+      this->rst_pin_->digital_read(),
+      this->busy_pin_->digital_read(),
+      this->dio1_pin_->digital_read());
 
-  // --- SX1262 hardware reset ---
-  //
-  // The XIAO/Wio reference initialization gives the module substantially
-  // more time after reset than the generic 10 ms reset used by the common
-  // RadioDriver implementation.
+  // ------------------------------------------------------------
+  // 3. Reset line
+  // ------------------------------------------------------------
+  ESP_LOGI(TAG, "[3] Performing SX1262 hardware reset");
+
   this->rst_pin_->digital_write(true);
+  ESP_LOGI(TAG, "    RESET -> HIGH");
   delay(10);
 
   this->rst_pin_->digital_write(false);
+  ESP_LOGI(TAG, "    RESET -> LOW");
+
   delay(100);
 
-  this->rst_pin_->digital_write(true);
+  ESP_LOGI(
+      TAG,
+      "    During reset: RESET=%d BUSY=%d DIO1=%d",
+      this->rst_pin_->digital_read(),
+      this->busy_pin_->digital_read(),
+      this->dio1_pin_->digital_read());
 
-  // Give the Wio module / TCXO / SX1262 boot sequence time to complete.
+  this->rst_pin_->digital_write(true);
+  ESP_LOGI(TAG, "    RESET -> HIGH");
+
   delay(500);
 
-  this->wait_busy_();
-  if (this->failed_)
-    return false;
+  ESP_LOGI(
+      TAG,
+      "    After reset: RESET=%d BUSY=%d DIO1=%d",
+      this->rst_pin_->digital_read(),
+      this->busy_pin_->digital_read(),
+      this->dio1_pin_->digital_read());
 
-  this->configure_radio_();
-  if (this->failed_)
-    return false;
+  // ------------------------------------------------------------
+  // 4. Wait for SX1262 BUSY to release
+  // ------------------------------------------------------------
+  ESP_LOGI(TAG, "[4] Waiting for SX1262 BUSY to become LOW");
 
-  ESP_LOGI(TAG, "SX1262 initialized");
+  uint32_t busy_start = millis();
+
+  while (this->busy_pin_->digital_read()) {
+    if (millis() - busy_start > 2000) {
+      ESP_LOGE(TAG, "    ERROR: BUSY remained HIGH for >2 seconds");
+      ESP_LOGE(TAG, "    SX1262 may not be powered or may be held in reset");
+      this->failed_ = true;
+      return false;
+    }
+
+    delay(1);
+  }
+
+  ESP_LOGI(
+      TAG,
+      "    BUSY released after %lu ms",
+      millis() - busy_start);
+
+  // ------------------------------------------------------------
+  // 5. First SPI/radio transaction
+  // ------------------------------------------------------------
+  ESP_LOGI(TAG, "[5] Attempting first SX1262 SPI transaction");
+
+  ESP_LOGI(TAG, "    BUSY=%d", this->busy_pin_->digital_read());
+  ESP_LOGI(TAG, "    DIO1=%d", this->dio1_pin_->digital_read());
+
+  /*
+   * IMPORTANT:
+   *
+   * Insert the existing low-level SX1262 status/read operation here.
+   * Do NOT invent a second SPI bus.
+   *
+   * We want the result of the first command immediately after reset,
+   * before configure_radio_() changes anything.
+   */
+
+  ESP_LOGI(TAG, "[6] Calling existing SX1262 driver initialization");
+
+  if (!this->configure_radio_()) {
+    ESP_LOGE(TAG, "    configure_radio_() FAILED");
+    ESP_LOGE(TAG, "========== SX1262 INIT FAILED ==========");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "    configure_radio_() succeeded");
+
+  ESP_LOGI(
+      TAG,
+      "    Final GPIO state: RESET=%d BUSY=%d DIO1=%d",
+      this->rst_pin_->digital_read(),
+      this->busy_pin_->digital_read(),
+      this->dio1_pin_->digital_read());
+
+  ESP_LOGI(TAG, "========== SX1262 INIT SUCCESS ==========");
+
   return true;
 }
+
+
 
 void RadioSX1262::dump_debug() {
   this->wait_busy_();
