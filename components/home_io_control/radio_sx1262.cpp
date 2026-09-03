@@ -21,6 +21,7 @@
 #include "radio_sx1262.h"
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
+#warning "### COMPILING FORK ###"
 
 namespace esphome {
 namespace home_io_control {
