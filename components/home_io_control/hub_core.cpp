@@ -55,7 +55,7 @@ static const char *const TAG = detail::TAG;
 ///       to 250 ms (warn_if_blocking_over_) because radio init can
 ///       exceed the default 30–50 ms budget.
 void IOHomeControlComponent::setup() {
-    ESP_LOGE(TAG, "========== HUB SETUP ENTERED ==========");
+    ESP_LOGCONFIG(TAG, "========== HUB SETUP ENTERED ==========");
   // IO-homecontrol exchanges are intentionally blocking and often take a few hundred
   // milliseconds, so use a higher warning threshold than ESPHome's generic 30-50 ms.
   this->warn_if_blocking_over_ = BLOCKING_WARNING_THRESHOLD_MS;
@@ -92,6 +92,7 @@ void IOHomeControlComponent::setup() {
   this->radio_ = this->select_and_construct_radio_(&chip_name_for_log);
     ESP_LOGE(TAG, "========== AFTER RADIO CONSTRUCTION ==========");
   if (this->radio_ == nullptr) {
+    ESP_LOGCONFIG("MARK FAILED");
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) — ESPHome's own LOG_STR() macro.
     this->mark_failed(LOG_STR("Radio driver selection/allocation failed (see earlier log for details)"));
     return;
