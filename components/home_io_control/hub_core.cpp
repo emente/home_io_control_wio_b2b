@@ -92,7 +92,7 @@ void IOHomeControlComponent::setup() {
   this->radio_ = this->select_and_construct_radio_(&chip_name_for_log);
     ESP_LOGE(TAG, "========== AFTER RADIO CONSTRUCTION ==========");
   if (this->radio_ == nullptr) {
-    ESP_LOGCONFIG("MARK FAILED");
+    ESP_LOGCONFIG(detail::TAG,"MARK FAILED");
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) — ESPHome's own LOG_STR() macro.
     this->mark_failed(LOG_STR("Radio driver selection/allocation failed (see earlier log for details)"));
     return;
